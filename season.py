@@ -9,6 +9,7 @@ from recruiting import generate_recruiting_class, print_class_summary
 from recruiting_offers import generate_offers, calculate_interest_scores
 from recruiting_commitments import resolve_full_recruiting_cycle, print_cycle_summary
 from lifecycle import advance_season, print_lifecycle_summary
+from conference_tournament import simulate_all_conference_tournaments
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Season Calendar v0.7
@@ -917,7 +918,9 @@ def simulate_world_season(all_programs, season_year, verbose=True):
       Step 1 -- Minutes allocation + stat init.
       Step 2 -- Cohesion initialization (first season).
       Step 3 -- Season simulation (games + per-program prestige pipeline).
+      Step 3b -- Conference tournaments (auto-bid determination).
       Step 4 -- Universe gravity (world population correction).
+      Step 4b -- Blue blood throne check.
       Step 5 -- Recruiting cycle.
       Step 6 -- Finalize season stats.
       Step 7 -- Lifecycle (graduation, aging, enrollment, cohesion).
@@ -953,6 +956,11 @@ def simulate_world_season(all_programs, season_year, verbose=True):
 
     if verbose:
         print_national_standings(all_programs, season_year)
+
+    # Step 3b: Conference tournaments -- determines auto-bids for NCAA tournament
+    auto_bids, conf_tourney_results = simulate_all_conference_tournaments(
+        all_programs, verbose=verbose
+    )
 
     # Step 4: Universe gravity
     apply_universe_gravity(all_programs)
@@ -1004,7 +1012,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
             print("  Low cohesion:      " + str(len(low_coh)) + " programs")
             print("  Veteran bonds:     " + str(total_bonds) + " total")
 
-    return all_programs, recruiting_class, cycle_summary, lifecycle_summary
+    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids
 
 
 # -----------------------------------------
@@ -1162,8 +1170,8 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    for year in range(2024, 2045):
-        all_programs, recruiting_class, cycle_summary, lifecycle_summary = simulate_world_season(
+    for year in range(2024, 2026):
+        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
         print_prestige_movers(all_programs, start_prestiges, year)
