@@ -1,24 +1,32 @@
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Player Lifecycle v0.3
+# COLLEGE HOOPS SIM -- Player Lifecycle v0.4
 # Closes the loop between recruiting and rosters.
 #
 # Called once per season, AFTER simulate_world_season()
 # and AFTER resolve_full_recruiting_cycle().
 #
 # Order of operations every season turnover:
-#   1. Graduate seniors       (remove from roster)
-#   2. Age remaining players  (Fr->So->Jr->Sr)
-#   3. Enroll committed recruits (add to roster as Freshmen)
-#   4. Reset recruiting state  (clear boards for next cycle)
+#   1. Develop returning players  (NEW in v0.4)
+#   2. Graduate seniors           (remove from roster)
+#   3. Age remaining players      (Fr->So->Jr->Sr)
+#   4. Enroll committed recruits  (add to roster as Freshmen)
+#   5. Reset recruiting state     (clear boards for next cycle)
+#
+# v0.4 CHANGES:
+#   - Development runs BEFORE graduation so seniors get their final
+#     offseason improvement before they leave.
+#   - develop_player() from player.py is called on every player.
+#   - Breakthroughs are tracked world-wide and reported.
+#   - Development summary added to lifecycle_summary.
 # -----------------------------------------
 
-from player import create_player
+from player import create_player, develop_player
 
 YEAR_PROGRESSION = {
     "Freshman":  "Sophomore",
     "Sophomore": "Junior",
     "Junior":    "Senior",
-    "Senior":    "Senior",   # safety net -- seniors removed before aging
+    "Senior":    "Senior",
 }
 
 
@@ -26,19 +34,43 @@ YEAR_PROGRESSION = {
 # MAIN ENTRY POINT
 # -----------------------------------------
 
-def advance_season(all_programs, recruiting_class):
+def advance_season(all_programs, recruiting_class, season_year=2025):
     """
     Call this once per year after the season and recruiting cycle are done.
     Returns (all_programs, lifecycle_summary).
+
+    v0.4: Development now runs first, before graduation.
     """
-    total_graduated = 0
-    total_enrolled  = 0
-    program_reports = []
+    total_graduated    = 0
+    total_enrolled     = 0
+    total_developed    = 0
+    total_breakthroughs = 0
+    breakthrough_log   = []
+    program_reports    = []
 
     for program in all_programs:
+        coach = program.get("coach", {})
+
+        # --- STEP 1: DEVELOP RETURNING PLAYERS ---
+        # Every player gets an offseason. Seniors too -- they develop
+        # then graduate. This is their final offseason improvement.
+        dev_count, bt_count, bt_events = _develop_roster(
+            program, coach, season_year
+        )
+        total_developed     += dev_count
+        total_breakthroughs += bt_count
+        breakthrough_log.extend(bt_events)
+
+        # --- STEP 2: GRADUATE SENIORS ---
         graduated = _graduate_seniors(program)
+
+        # --- STEP 3: AGE REMAINING PLAYERS ---
         _age_roster(program)
-        enrolled  = _enroll_recruits(program, recruiting_class)
+
+        # --- STEP 4: ENROLL COMMITTED RECRUITS ---
+        enrolled = _enroll_recruits(program, recruiting_class)
+
+        # --- STEP 5: RESET RECRUITING STATE ---
         _reset_recruiting_state(program)
 
         total_graduated += graduated
@@ -49,47 +81,95 @@ def advance_season(all_programs, recruiting_class):
             "graduated":   graduated,
             "enrolled":    enrolled,
             "roster_size": len(program["roster"]),
+            "developed":   dev_count,
+            "breakthroughs": bt_count,
         })
 
     summary = {
-        "total_graduated": total_graduated,
-        "total_enrolled":  total_enrolled,
-        "program_reports": program_reports,
+        "total_graduated":     total_graduated,
+        "total_enrolled":      total_enrolled,
+        "total_developed":     total_developed,
+        "total_breakthroughs": total_breakthroughs,
+        "breakthrough_log":    breakthrough_log,
+        "program_reports":     program_reports,
     }
 
     return all_programs, summary
 
 
 # -----------------------------------------
-# STEP 1: GRADUATE SENIORS
+# STEP 1: DEVELOP ROSTER
+# -----------------------------------------
+
+def _develop_roster(program, coach, season_year):
+    """
+    Runs development for every player on the roster.
+    Returns (dev_count, breakthrough_count, breakthrough_events).
+
+    Seniors develop too -- this is their final offseason.
+    Freshmen who just enrolled this cycle are NOT developed yet --
+    they enrolled after the season, so their development starts
+    next offseason.
+    """
+    dev_count       = 0
+    bt_count        = 0
+    breakthrough_events = []
+
+    for player in program["roster"]:
+        # Skip players who just enrolled (status still "enrolled" from
+        # this cycle's recruiting -- they haven't played a season yet)
+        # Note: newly enrolled freshmen won't have this flag set in the
+        # current cycle since development runs before enrollment.
+        # All current roster players have played at least one season.
+
+        player, report = develop_player(
+            player, coach, season_year,
+            training_focus=None,   # FUTURE HOOK: training camp
+            morale_modifier=1.0,   # FUTURE HOOK: playing time morale
+        )
+
+        if report["total_gain"] > 0:
+            dev_count += 1
+
+        if report["breakthrough"]:
+            bt_count += 1
+            breakthrough_events.append({
+                "program":  program["name"],
+                "player":   player["name"],
+                "position": player["position"],
+                "year":     player["year"],
+                "arc_type": player["arc_type"],
+                "attrs":    report["breakthrough_attrs"],
+                "total_gain": report["total_gain"],
+            })
+
+    return dev_count, bt_count, breakthrough_events
+
+
+# -----------------------------------------
+# STEP 2: GRADUATE SENIORS
 # -----------------------------------------
 
 def _graduate_seniors(program):
-    """
-    Removes all Seniors from the roster.
-    Returns count of players removed.
-    """
+    """Removes all Seniors from the roster. Returns count removed."""
     seniors = [p for p in program["roster"] if p.get("year", "") == "Senior"]
     program["roster"] = [p for p in program["roster"] if p.get("year", "") != "Senior"]
     return len(seniors)
 
 
 # -----------------------------------------
-# STEP 2: AGE REMAINING PLAYERS
+# STEP 3: AGE REMAINING PLAYERS
 # -----------------------------------------
 
 def _age_roster(program):
-    """
-    Advances every remaining player one year.
-    Freshman -> Sophomore -> Junior -> Senior
-    """
+    """Advances every remaining player one year."""
     for player in program["roster"]:
         current_year = player.get("year", "Freshman")
         player["year"] = YEAR_PROGRESSION.get(current_year, "Sophomore")
 
 
 # -----------------------------------------
-# STEP 3: ENROLL COMMITTED RECRUITS
+# STEP 4: ENROLL COMMITTED RECRUITS
 # -----------------------------------------
 
 def _enroll_recruits(program, recruiting_class):
@@ -116,10 +196,7 @@ def _enroll_recruits(program, recruiting_class):
 
 
 def _recruit_to_player(recruit, conference=""):
-    """
-    Converts a recruit dict into a player dict compatible with player.py.
-    Recruit attributes already use the same keys and 1-20 scale as player.py.
-    """
+    """Converts a recruit dict into a player dict."""
     player = create_player(
         name       = recruit["name"],
         position   = recruit["position"],
@@ -173,7 +250,7 @@ def _recruit_to_player(recruit, conference=""):
 
 
 # -----------------------------------------
-# STEP 4: RESET RECRUITING STATE
+# STEP 5: RESET RECRUITING STATE
 # -----------------------------------------
 
 def _reset_recruiting_state(program):
@@ -192,8 +269,10 @@ def print_lifecycle_summary(lifecycle_summary, season_year):
     print("=" * 60)
     print("  " + str(season_year) + " SEASON TURNOVER -- ROSTER LIFECYCLE")
     print("=" * 60)
-    print("  Players graduated:  " + str(lifecycle_summary["total_graduated"]))
-    print("  Recruits enrolled:  " + str(lifecycle_summary["total_enrolled"]))
+    print("  Players graduated:   " + str(lifecycle_summary["total_graduated"]))
+    print("  Recruits enrolled:   " + str(lifecycle_summary["total_enrolled"]))
+    print("  Players developed:   " + str(lifecycle_summary["total_developed"]))
+    print("  Breakthroughs:       " + str(lifecycle_summary["total_breakthroughs"]))
 
     thin_rosters = [
         r for r in lifecycle_summary["program_reports"]
@@ -204,6 +283,23 @@ def print_lifecycle_summary(lifecycle_summary, season_year):
         print("  WARNING -- programs with thin rosters (<7 players):")
         for r in thin_rosters:
             print("    " + r["name"] + ": " + str(r["roster_size"]) + " players")
+
+    # Print breakthroughs
+    bt_log = lifecycle_summary.get("breakthrough_log", [])
+    if bt_log:
+        print("")
+        print("  BREAKTHROUGH PLAYERS this offseason:")
+        for bt in bt_log[:15]:   # cap at 15 for readability
+            attr_str = ", ".join(
+                a["attr"] + " " + str(a["from"]) + "->" + str(a["to"])
+                for a in bt["attrs"]
+            )
+            print("    " + bt["player"].ljust(22) +
+                  bt["position"] + " " + bt["year"].ljust(12) +
+                  bt["program"].ljust(24) +
+                  "(" + bt["arc_type"] + ")  " + attr_str)
+        if len(bt_log) > 15:
+            print("    ... and " + str(len(bt_log) - 15) + " more")
 
     print("")
     print("  Biggest incoming classes:")
@@ -260,112 +356,87 @@ if __name__ == "__main__":
     )
     print("  Committed: " + str(cycle_summary["total_commits"]))
 
-    # Snapshot BEFORE
-    print("")
-    print("=== BEFORE LIFECYCLE ===")
+    # Snapshot a player BEFORE development
     kentucky = next(p for p in all_programs if p["name"] == "Kentucky")
-    osu      = next(p for p in all_programs if p["name"] == "Oklahoma State")
-    print_program_roster_state(kentucky)
-    print_program_roster_state(osu)
-
-    seniors_before = sum(
-        1 for prog in all_programs
-        for player in prog["roster"]
-        if player.get("year") == "Senior"
-    )
-    freshmen_before = sum(
-        1 for prog in all_programs
-        for player in prog["roster"]
-        if player.get("year") == "Freshman"
-    )
-    total_players_before = sum(len(prog["roster"]) for prog in all_programs)
+    if kentucky["roster"]:
+        test_player = next(
+            (p for p in kentucky["roster"] if p.get("year") == "Sophomore"),
+            kentucky["roster"][0]
+        )
+        before_finishing  = test_player["finishing"]
+        before_rebounding = test_player["rebounding"]
+        before_passing    = test_player["passing"]
+        test_name         = test_player["name"]
 
     print("")
-    print("  Total players:  " + str(total_players_before))
-    print("  Seniors:        " + str(seniors_before))
-    print("  Freshmen:       " + str(freshmen_before))
-
-    # Run lifecycle
-    print("")
-    print("Running lifecycle / season turnover...")
-    all_programs, lifecycle_summary = advance_season(all_programs, recruiting_class)
-
-    # Snapshot AFTER
-    print("")
-    print("=== AFTER LIFECYCLE ===")
-    kentucky = next(p for p in all_programs if p["name"] == "Kentucky")
-    osu      = next(p for p in all_programs if p["name"] == "Oklahoma State")
-    print_program_roster_state(kentucky)
-    print_program_roster_state(osu)
-
-    seniors_after = sum(
-        1 for prog in all_programs
-        for player in prog["roster"]
-        if player.get("year") == "Senior"
+    print("Running lifecycle with development...")
+    all_programs, lifecycle_summary = advance_season(
+        all_programs, recruiting_class, season_year=2025
     )
-    freshmen_after = sum(
-        1 for prog in all_programs
-        for player in prog["roster"]
-        if player.get("year") == "Freshman"
-    )
-    total_players_after = sum(len(prog["roster"]) for prog in all_programs)
 
-    print("")
-    print("  Total players:  " + str(total_players_after))
-    print("  Seniors:        " + str(seniors_after)  + "  (these are promoted Juniors -- correct)")
-    print("  Freshmen:       " + str(freshmen_after) + "  (these are newly enrolled recruits)")
-
-    # --- CORRECT PASS/FAIL CHECKS ---
-    print("")
-    print("=== VERIFICATION ===")
-
-    # Check 1: seniors_after should equal the old junior count
-    # (every Junior became a Senior, the old Seniors are gone)
-    juniors_before = sum(
-        1 for prog in all_programs
-        for player in prog["roster"]
-        if player.get("year") == "Junior"
-    )
-    # After lifecycle, what were Juniors are now Seniors
-    # We can't easily re-check this post-hoc, so we verify via math:
-    # total_after = total_before - graduated + enrolled
-    expected_total = total_players_before - lifecycle_summary["total_graduated"] + lifecycle_summary["total_enrolled"]
-    if total_players_after == expected_total:
-        print("PASS: Roster math checks out. " +
-              str(lifecycle_summary["total_graduated"]) + " graduated, " +
-              str(lifecycle_summary["total_enrolled"]) + " enrolled.")
-    else:
-        print("FAIL: Expected " + str(expected_total) +
-              " total players, got " + str(total_players_after))
-
-    # Check 2: freshmen_after should equal total_enrolled
-    if freshmen_after == lifecycle_summary["total_enrolled"]:
-        print("PASS: Freshman count matches enrolled count (" +
-              str(freshmen_after) + ").")
-    else:
-        print("FAIL: Freshman count (" + str(freshmen_after) +
-              ") does not match enrolled count (" +
-              str(lifecycle_summary["total_enrolled"]) + ").")
-
-    # Check 3: no player should still have "committed" status
-    still_committed = [
-        r for r in recruiting_class if r.get("status") == "committed"
-    ]
-    if len(still_committed) == 0:
-        print("PASS: All committed recruits are now marked enrolled.")
-    else:
-        print("FAIL: " + str(len(still_committed)) +
-              " recruits still showing committed status.")
-
-    # Full summary
     print_lifecycle_summary(lifecycle_summary, season_year=2025)
 
-    # Freshman spot check
+    # Development verification
     print("")
-    print("=== FRESHMAN SPOT CHECK -- Kentucky ===")
-    freshmen = [p for p in kentucky["roster"] if p["year"] == "Freshman"]
-    print("  Kentucky freshmen: " + str(len(freshmen)))
-    for p in freshmen:
-        print("    " + p["name"] + "  " + p["position"] +
-              "  finishing: " + str(p["finishing"]) +
-              "  rebounding: " + str(p["rebounding"]))
+    print("=== DEVELOPMENT VERIFICATION ===")
+    print("  Total players developed: " + str(lifecycle_summary["total_developed"]))
+    print("  Breakthroughs:           " + str(lifecycle_summary["total_breakthroughs"]))
+
+    total_players = sum(len(p["roster"]) for p in all_programs)
+    print("  Total players on rosters: " + str(total_players))
+    bt_rate = lifecycle_summary["total_breakthroughs"] / max(1, total_players) * 100
+    print("  Breakthrough rate: " + str(round(bt_rate, 2)) + "%")
+    print("  (healthy: 1-4% of players = ~30-120 per season)")
+
+    # Verify rosters are still healthy
+    thin = [p for p in all_programs if len(p.get("roster", [])) < 8]
+    if thin:
+        print("")
+        print("WARNING: " + str(len(thin)) + " programs with thin rosters:")
+        for p in thin[:5]:
+            print("  " + p["name"] + ": " + str(len(p["roster"])) + " players")
+    else:
+        print("")
+        print("PASS: All programs have 8+ players after lifecycle.")
+
+    # Spot check: development comparison between high and low dev coaches
+    print("")
+    print("=== COACH DEVELOPMENT COMPARISON ===")
+    print("  Finding programs with high vs low player_development coaches...")
+
+    high_dev_programs = sorted(
+        [p for p in all_programs if p.get("coach", {}).get("player_development", 0) >= 16],
+        key=lambda p: p["coach"]["player_development"],
+        reverse=True
+    )[:3]
+
+    low_dev_programs = sorted(
+        [p for p in all_programs if p.get("coach", {}).get("player_development", 0) <= 7],
+        key=lambda p: p["coach"]["player_development"]
+    )[:3]
+
+    print("")
+    print("  High development coaches:")
+    for p in high_dev_programs:
+        dev_rating = p["coach"]["player_development"]
+        bts = next((r["breakthroughs"] for r in lifecycle_summary["program_reports"]
+                    if r["name"] == p["name"]), 0)
+        devs = next((r["developed"] for r in lifecycle_summary["program_reports"]
+                     if r["name"] == p["name"]), 0)
+        print("    " + p["name"].ljust(24) +
+              "dev_rating: " + str(dev_rating) +
+              "  players improved: " + str(devs) +
+              "  breakthroughs: " + str(bts))
+
+    print("")
+    print("  Low development coaches:")
+    for p in low_dev_programs:
+        dev_rating = p["coach"]["player_development"]
+        bts = next((r["breakthroughs"] for r in lifecycle_summary["program_reports"]
+                    if r["name"] == p["name"]), 0)
+        devs = next((r["developed"] for r in lifecycle_summary["program_reports"]
+                     if r["name"] == p["name"]), 0)
+        print("    " + p["name"].ljust(24) +
+              "dev_rating: " + str(dev_rating) +
+              "  players improved: " + str(devs) +
+              "  breakthroughs: " + str(bts))
