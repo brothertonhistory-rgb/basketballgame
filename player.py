@@ -61,6 +61,7 @@ DEVELOPABLE_ATTRIBUTES = [
     "on_ball_defense", "help_defense", "rebounding", "shot_blocking",
     "steal_tendency",
     "speed", "lateral_quickness", "strength", "vertical",
+    "endurance",   # physical stamina -- develops faster under high-pace coaches
 ]
 
 # Natural attributes by position -- self-improvement focuses here
@@ -323,6 +324,17 @@ def develop_player(player, coach, season_year,
         "dev_score":          round(combined_dev, 3),
     }
 
+    # --- ENDURANCE DEVELOPMENT ---
+    # Endurance develops separately from skill attributes.
+    # Primary driver: coach's pace system. Playing in a fast-paced
+    # system is like conditioning training -- endurance improves faster.
+    # Work ethic is a secondary driver.
+    #
+    # SEASON-LONG FATIGUE HOOK (future):
+    #   When season-long fatigue is built, pass cumulative_minutes here.
+    #   High-minute players develop endurance faster but wear down more.
+    _develop_endurance(player, coach, combined_dev)
+
     return player, report
 
 
@@ -331,6 +343,69 @@ def _avg_key_attrs(player, position):
     natural = NATURAL_ATTRIBUTES.get(position, DEVELOPABLE_ATTRIBUTES[:5])
     vals    = [player.get(a, 500) for a in natural[:5]]
     return sum(vals) / max(1, len(vals))
+
+
+def _develop_endurance(player, coach, combined_dev):
+    """
+    Develops endurance separately from skill attributes.
+
+    Pace is the primary driver -- a fast-pace system is conditioning
+    training by design. Every practice, every game is a cardio workout.
+    Work ethic is a secondary driver.
+
+    A player under a pace 85 coach for 3 years will have meaningfully
+    better endurance than the same player under a pace 20 coach.
+
+    Gains are modest -- 3-12 points per season typically.
+    No ceiling dampening on endurance -- it can always improve.
+    Cap at 950 (same as skill attributes).
+
+    SEASON-LONG FATIGUE HOOK:
+    When built, cumulative_minutes will be passed in and
+    high-minute players will gain endurance faster but also
+    accumulate fatigue that reduces performance late in the season.
+    """
+    year = player.get("year", "Freshman")
+    if year == "Senior":
+        return  # seniors don't develop
+
+    current_endurance = player.get("endurance", 500)
+    if current_endurance >= 950:
+        return
+
+    # Pace contribution -- fast pace systems train endurance harder
+    pace = 50
+    if coach:
+        pace = coach.get("pace", 50)
+    pace_factor = pace / 100.0   # 0.0-1.0
+
+    # Work ethic contribution
+    work_ethic   = player.get("work_ethic", 10)
+    ethic_factor = work_ethic / 20.0   # 0.05-1.0
+
+    # Base endurance gain: pace-weighted + work ethic
+    # Max ~12 points/season for pace 85 + high work ethic
+    base_gain = (pace_factor * 0.65 + ethic_factor * 0.35) * 12.0
+
+    # Arc type modifier -- overachievers and steady types condition well
+    arc_type = player.get("arc_type", "steady")
+    arc_endurance_mods = {
+        "late_bloomer":  0.8,
+        "steady":        1.0,
+        "overachiever":  1.2,
+        "plateau":       0.7,
+        "bust":          0.5,
+    }
+    arc_mod   = arc_endurance_mods.get(arc_type, 1.0)
+    base_gain *= arc_mod
+
+    # Add noise
+    noise      = random.gauss(0, 3.0)
+    final_gain = max(0.0, base_gain + noise)
+
+    if final_gain >= 2.0:
+        new_endurance = min(950, int(current_endurance + final_gain))
+        player["endurance"] = new_endurance
 
 
 # -----------------------------------------
@@ -389,6 +464,7 @@ def create_player(name, position, year, conference="",
         "lateral_quickness": athleticism["lateral_quickness"],
         "strength":          athleticism["strength"],
         "vertical":          athleticism["vertical"],
+        "endurance":         athleticism["endurance"],
 
         # --- MENTAL ATTRIBUTES (1-20, intentionally separate scale) ---
         "basketball_iq": mental["basketball_iq"],
@@ -560,6 +636,7 @@ def generate_athleticism(position):
             "lateral_quickness": rand_attr(460),
             "strength":          rand_attr(290),
             "vertical":          rand_attr(410),
+            "endurance":         rand_attr(560, spread=80),  # PG highest baseline
         }
     elif position == "SF":
         return {
@@ -567,6 +644,7 @@ def generate_athleticism(position):
             "lateral_quickness": rand_attr(395),
             "strength":          rand_attr(375),
             "vertical":          rand_attr(395),
+            "endurance":         rand_attr(500, spread=80),  # wide variance position
         }
     else:  # PF / C
         return {
@@ -574,6 +652,7 @@ def generate_athleticism(position):
             "lateral_quickness": rand_attr(275),
             "strength":          rand_attr(465),
             "vertical":          rand_attr(350),
+            "endurance":         rand_attr(440, spread=80),  # lowest baseline, real outliers exist
         }
 
 

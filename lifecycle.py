@@ -39,21 +39,30 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
     Call this once per year after the season and recruiting cycle are done.
     Returns (all_programs, lifecycle_summary).
 
+    v0.5: Minutes allocation and cohesion update added after roster turnover.
+          Previous season's minutes are captured before turnover so
+          continuity score can compare returning vs departing players.
+
     v0.4: Development now runs first, before graduation.
     """
-    total_graduated    = 0
-    total_enrolled     = 0
-    total_developed    = 0
+    from roster_minutes import allocate_minutes
+    from cohesion import update_cohesion
+
+    total_graduated     = 0
+    total_enrolled      = 0
+    total_developed     = 0
     total_breakthroughs = 0
-    breakthrough_log   = []
-    program_reports    = []
+    breakthrough_log    = []
+    program_reports     = []
 
     for program in all_programs:
         coach = program.get("coach", {})
 
+        # Capture previous minutes BEFORE roster changes
+        # Used by cohesion to calculate continuity score
+        previous_minutes = dict(program.get("minutes_allocation", {}))
+
         # --- STEP 1: DEVELOP RETURNING PLAYERS ---
-        # Every player gets an offseason. Seniors too -- they develop
-        # then graduate. This is their final offseason improvement.
         dev_count, bt_count, bt_events = _develop_roster(
             program, coach, season_year
         )
@@ -73,16 +82,28 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
         # --- STEP 5: RESET RECRUITING STATE ---
         _reset_recruiting_state(program)
 
+        # --- STEP 6: ALLOCATE MINUTES FOR NEW ROSTER ---
+        # Must happen after enrollment so new players are included
+        allocate_minutes(program)
+
+        # --- STEP 7: UPDATE COHESION ---
+        # Uses previous_minutes to calculate continuity score
+        # Finds veteran combo bonds from new roster minutes
+        update_cohesion(program, previous_minutes=previous_minutes)
+
         total_graduated += graduated
         total_enrolled  += enrolled
 
         program_reports.append({
-            "name":        program["name"],
-            "graduated":   graduated,
-            "enrolled":    enrolled,
-            "roster_size": len(program["roster"]),
-            "developed":   dev_count,
+            "name":          program["name"],
+            "graduated":     graduated,
+            "enrolled":      enrolled,
+            "roster_size":   len(program["roster"]),
+            "developed":     dev_count,
             "breakthroughs": bt_count,
+            "cohesion":      program.get("cohesion_score", 50),
+            "cohesion_tier": program.get("cohesion_tier", "average"),
+            "combo_bonds":   len(program.get("combo_bonds", [])),
         })
 
     summary = {
@@ -204,33 +225,34 @@ def _recruit_to_player(recruit, conference=""):
         conference = conference,
         heritage   = recruit.get("heritage"),
         shooting = {
-            "catch_and_shoot": recruit.get("catch_and_shoot", 10),
-            "off_dribble":     recruit.get("off_dribble",     10),
-            "mid_range":       recruit.get("mid_range",       10),
-            "three_point":     recruit.get("three_point",     10),
-            "free_throw":      recruit.get("free_throw",      10),
-            "finishing":       recruit.get("finishing",       10),
-            "post_scoring":    recruit.get("post_scoring",    10),
+            "catch_and_shoot": recruit.get("catch_and_shoot", 500),
+            "off_dribble":     recruit.get("off_dribble",     500),
+            "mid_range":       recruit.get("mid_range",       500),
+            "three_point":     recruit.get("three_point",     500),
+            "free_throw":      recruit.get("free_throw",      500),
+            "finishing":       recruit.get("finishing",       500),
+            "post_scoring":    recruit.get("post_scoring",    500),
         },
         defense = {
-            "on_ball_defense": recruit.get("on_ball_defense", 10),
-            "help_defense":    recruit.get("help_defense",    10),
-            "shot_blocking":   recruit.get("shot_blocking",   10),
-            "steal_tendency":  recruit.get("steal_tendency",  10),
-            "foul_tendency":   recruit.get("foul_tendency",   10),
+            "on_ball_defense": recruit.get("on_ball_defense", 500),
+            "help_defense":    recruit.get("help_defense",    500),
+            "shot_blocking":   recruit.get("shot_blocking",   500),
+            "steal_tendency":  recruit.get("steal_tendency",  500),
+            "foul_tendency":   recruit.get("foul_tendency",   500),
         },
-        rebounding  = recruit.get("rebounding", 10),
+        rebounding  = recruit.get("rebounding", 500),
         playmaking  = {
-            "passing":         recruit.get("passing",         10),
-            "ball_handling":   recruit.get("ball_handling",   10),
-            "court_vision":    recruit.get("court_vision",    10),
-            "decision_making": recruit.get("decision_making", 10),
+            "passing":         recruit.get("passing",         500),
+            "ball_handling":   recruit.get("ball_handling",   500),
+            "court_vision":    recruit.get("court_vision",    500),
+            "decision_making": recruit.get("decision_making", 500),
         },
         athleticism = {
-            "speed":             recruit.get("speed",             10),
-            "lateral_quickness": recruit.get("lateral_quickness", 10),
-            "strength":          recruit.get("strength",          10),
-            "vertical":          recruit.get("vertical",          10),
+            "speed":             recruit.get("speed",             500),
+            "lateral_quickness": recruit.get("lateral_quickness", 500),
+            "strength":          recruit.get("strength",          500),
+            "vertical":          recruit.get("vertical",          500),
+            "endurance":         recruit.get("endurance",         500),
         },
         mental = {
             "basketball_iq": recruit.get("basketball_iq", 10),

@@ -151,17 +151,30 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     """
     Simulates a COMPLETE year for the entire world.
 
-    Step 1 -- Season simulation: every conference plays its full schedule,
-              records update, prestige shifts.
-    Step 2 -- Recruiting cycle: class generated, offers made, interest
-              calculated, commitments resolved.
-    Step 3 -- Lifecycle: seniors graduate, players age, recruits enroll.
+    Step 1 -- Minutes allocation: assign playing time for this season.
+    Step 2 -- Cohesion initialization (first season) or already set.
+    Step 3 -- Season simulation: every conference plays its full schedule.
+    Step 4 -- Recruiting cycle: offers, interest, commitments.
+    Step 5 -- Lifecycle: graduation, aging, enrollment, minutes, cohesion update.
 
     Returns (all_programs, recruiting_class, cycle_summary, lifecycle_summary)
     """
+    from roster_minutes import allocate_minutes
+    from cohesion import update_cohesion
 
     # -------------------------------------------
-    # STEP 1: SEASON SIMULATION
+    # STEP 1: MINUTES ALLOCATION
+    # Must happen before games so cohesion is ready
+    # On first season, also initialize cohesion at baseline
+    # -------------------------------------------
+    for program in all_programs:
+        allocate_minutes(program)
+        # Initialize cohesion if not yet set (first season)
+        if "cohesion_score" not in program:
+            update_cohesion(program, previous_minutes=None)
+
+    # -------------------------------------------
+    # STEP 3: SEASON SIMULATION
     # -------------------------------------------
     conferences = {}
     for p in all_programs:
@@ -186,7 +199,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         print_national_standings(all_programs, season_year)
 
     # -------------------------------------------
-    # STEP 2: RECRUITING CYCLE
+    # STEP 4: RECRUITING CYCLE
     # -------------------------------------------
     if verbose:
         print("")
@@ -212,7 +225,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         print("  Unsigned:        " + str(len(cycle_summary["unsigned"])))
 
     # -------------------------------------------
-    # STEP 3: LIFECYCLE -- graduation, aging, enrollment
+    # STEP 5: LIFECYCLE -- graduation, aging, enrollment, cohesion
     # -------------------------------------------
     if verbose:
         print("")
@@ -223,6 +236,18 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     if verbose:
         print("  Seniors graduated: " + str(lifecycle_summary["total_graduated"]))
         print("  Recruits enrolled: " + str(lifecycle_summary["total_enrolled"]))
+
+        # Cohesion summary
+        reports = lifecycle_summary.get("program_reports", [])
+        if reports:
+            avg_cohesion = sum(r.get("cohesion", 50) for r in reports) / len(reports)
+            high_coh = [r for r in reports if r.get("cohesion_tier") in ("very_high", "high")]
+            low_coh  = [r for r in reports if r.get("cohesion_tier") in ("low", "very_low")]
+            total_bonds = sum(r.get("combo_bonds", 0) for r in reports)
+            print("  Avg cohesion:      " + str(round(avg_cohesion, 1)) + "/100")
+            print("  High cohesion:     " + str(len(high_coh)) + " programs")
+            print("  Low cohesion:      " + str(len(low_coh)) + " programs")
+            print("  Veteran bonds:     " + str(total_bonds) + " total")
 
     return all_programs, recruiting_class, cycle_summary, lifecycle_summary
 

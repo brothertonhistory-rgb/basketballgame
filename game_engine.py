@@ -277,12 +277,16 @@ def simulate_game(home_team, away_team, possessions=None, verbose=True):
     """
     Simulates a full game between two programs.
 
-    v0.4: get_team_ratings() now returns 1-1000 values.
-    All internal formulas recalibrated. Game outcomes are equivalent.
+    v0.5: Cohesion modifiers applied. Teams with high roster continuity
+          and veteran combo bonds get reduced turnovers, better shot
+          quality, and rebounding bonuses. Low cohesion teams pay penalties.
+
+    v0.4: get_team_ratings() returns 1-1000 values.
 
     Accepts either a full program dict (with roster and coach) or a
     simple ratings dict (for backward compatibility).
     """
+    from cohesion import get_cohesion_modifiers
 
     # --- BUILD RATINGS ---
     if "roster" in home_team:
@@ -295,9 +299,17 @@ def simulate_game(home_team, away_team, possessions=None, verbose=True):
     else:
         away_ratings = away_team
 
+    # --- GET COHESION MODIFIERS ---
+    home_cohesion = get_cohesion_modifiers(home_team) if "roster" in home_team else {}
+    away_cohesion = get_cohesion_modifiers(away_team) if "roster" in away_team else {}
+
     # --- BUILD GAME PROFILES FROM COACH SLIDERS ---
     home_profile = build_game_profile(home_team)
     away_profile = build_game_profile(away_team)
+
+    # Apply cohesion modifiers to game profiles
+    home_profile = _apply_cohesion_to_profile(home_profile, home_cohesion)
+    away_profile = _apply_cohesion_to_profile(away_profile, away_cohesion)
 
     # --- DETERMINE POSSESSIONS ---
     if possessions is None:
@@ -315,9 +327,12 @@ def simulate_game(home_team, away_team, possessions=None, verbose=True):
         home_coach = home_team.get("coach", {})
         away_coach = away_team.get("coach", {})
         if home_coach and away_coach:
+            home_coh = home_team.get("cohesion_tier", "?") if "roster" in home_team else "n/a"
+            away_coh = away_team.get("cohesion_tier", "?") if "roster" in away_team else "n/a"
             print("  " + home_coach.get("archetype", "?").replace("_", " ") +
                   " vs " + away_coach.get("archetype", "?").replace("_", " ") +
-                  "  |  " + str(possessions) + " possessions")
+                  "  |  " + str(possessions) + " poss" +
+                  "  |  cohesion: " + home_coh + " / " + away_coh)
         print("----------------------------------------")
 
     # --- SIMULATE GAME ---
@@ -362,6 +377,32 @@ def simulate_game(home_team, away_team, possessions=None, verbose=True):
         "away_name": away_ratings["name"],
         "possessions": possessions,
     }
+
+
+def _apply_cohesion_to_profile(profile, cohesion_mods):
+    """
+    Applies cohesion modifiers to a game profile.
+    Modifies turnover_rate and shot_quality_bonus.
+    Stores rebounding_mod for resolve_rebound.
+    Returns modified profile.
+    """
+    if not cohesion_mods:
+        profile["rebounding_mod"] = 0.0
+        return profile
+
+    to_mod = cohesion_mods.get("turnover_rate_mod", 0.0)
+    profile["turnover_rate"] = max(0.08, min(0.35,
+        profile["turnover_rate"] + to_mod
+    ))
+
+    sq_mod = cohesion_mods.get("shot_quality_mod", 0.0)
+    profile["shot_quality_bonus"] = round(
+        profile.get("shot_quality_bonus", 0.0) + sq_mod, 4
+    )
+
+    profile["rebounding_mod"] = cohesion_mods.get("rebounding_mod", 0.0)
+
+    return profile
 
 
 # -----------------------------------------

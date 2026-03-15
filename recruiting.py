@@ -404,6 +404,19 @@ def _generate_attributes(position, true_talent, is_ranked=True):
                 val  = rand_attr(base, spread=40)
             attributes[attr] = max(1, min(700, val))   # depth pool cap at 700
 
+        # Depth pool endurance -- lower baseline, wide variance
+        endurance_bases = {"PG": 460, "SG": 440, "SF": 400, "PF": 370, "C": 340}
+        attributes["endurance"] = max(1, min(700, rand_attr(
+            endurance_bases.get(position, 400), spread=80
+        )))
+
+    # Endurance for ranked players -- added after ranked attr loop
+    if is_ranked:
+        endurance_bases = {"PG": 560, "SG": 540, "SF": 500, "PF": 460, "C": 420}
+        endurance_base  = endurance_bases.get(position, 500)
+        endurance_bonus = int(talent_factor * 80)
+        attributes["endurance"] = rand_attr(endurance_base + endurance_bonus, spread=80)
+
     # Mental attributes -- same scale regardless of tier
     mental_base = 8 + int(talent_factor * 3) if is_ranked else 8
     attributes["basketball_iq"] = _rand_mental(mental_base, spread=3)
