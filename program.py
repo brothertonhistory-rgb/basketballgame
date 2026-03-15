@@ -3,14 +3,32 @@ from player import generate_team, get_team_ratings
 from coach import generate_coach
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Program Database v0.2
+# COLLEGE HOOPS SIM -- Program Database v0.3
 # System 6 of the Design Bible
 # Defines what a program IS -- persistent across seasons
 #
-# v0.2 CHANGES:
-#   - update_prestige_for_results() performance multiplier reduced from 10 to 6.
-#     This tightens prestige swings. A team wildly overperforming their prestige
-#     level now moves ~3-4 points per season instead of 5-6, compounding less.
+# v0.3 CHANGES -- Prestige Stability Overhaul:
+#
+#   CHANGE 1: Performance multiplier reduced from 6 to 3.
+#     A wildly overperforming season now moves prestige ~1.5 points
+#     before gravity, not ~3. Single seasons should not reshape programs.
+#
+#   CHANGE 2: Hard cap of ±4 points total per season.
+#     No program can gain or lose more than 4 prestige points in one
+#     season regardless of performance or tournament results.
+#     Collapses are symmetric -- they should compound over multiple
+#     bad years, not crater after one.
+#
+#   CHANGE 3: Tournament bonus recalibrated.
+#     Making the conference tournament threshold now gives +0.5 (was +2).
+#     Each tournament win gives +0.75 (was +1.5).
+#     These are included in the ±4 cap.
+#     Rationale: in the current sim, "made_tournament" fires for roughly
+#     half the conference, making it a normal event. It should not be a
+#     major prestige lever until a real postseason exists.
+#
+#   NOTE: apply_gravity_drift() (the anchor drift logic) lives in
+#   season.py and was also slowed there. See season.py v0.5 notes.
 # -----------------------------------------
 
 DIVISIONS = ["D1", "D2", "D3", "JUCO"]
@@ -29,6 +47,17 @@ CONFERENCES = {
     "JUCO": ["JUCO Region 1", "JUCO Region 2", "JUCO Region 3"],
 }
 
+# -----------------------------------------
+# PRESTIGE STABILITY CONSTANTS
+# -----------------------------------------
+
+# v0.3: reduced from 6. Halves raw season swing before cap applies.
+PERFORMANCE_MULTIPLIER = 3
+
+# v0.3: hard ceiling on any single season's prestige movement.
+# Applies to the SUM of performance delta + tournament bonus.
+# Symmetric: collapses are also capped at -4.
+SEASON_PRESTIGE_CAP = 4.0
 
 # -----------------------------------------
 # PRESTIGE GRADE -- per the Bible (A+ through F)
@@ -77,7 +106,6 @@ def create_program(name, nickname, city, state, division, conference,
     else:
         gravity_pull_rate = 0.03
 
-    # generate_team() takes prestige 1-100 directly (fixed in v0.4)
     roster_data = generate_team(name, prestige=prestige_current)
     coach       = generate_coach(coach_name, prestige=prestige_current,
                                  archetype=coach_archetype)
@@ -135,7 +163,7 @@ def create_program(name, nickname, city, state, division, conference,
 def apply_gravity_pull(program):
     """
     Pulls current prestige toward historical gravity anchor.
-    Called once per season at season end.
+    Called once per season at season end, after update_prestige_for_results().
     """
     current = program["prestige_current"]
     gravity = program["prestige_gravity"]
@@ -155,30 +183,35 @@ def update_prestige_for_results(program, wins, losses, made_tournament, tourname
     Adjusts current prestige based on season results.
     Called at season end BEFORE gravity pull.
 
-    v0.2: Performance multiplier reduced from 10 to 6 to tighten
-    season-to-season swings. Previously a single great season could
-    move prestige 5-7 points before gravity even ran, compounding
-    into 20+ point swings over 3 seasons. Now capped closer to 3-4
-    points for a genuinely exceptional season.
+    v0.3 changes:
+      - Performance multiplier: 3 (was 6, was 10 before that)
+      - Tournament bonus recalibrated: +0.5 for qualifying, +0.75 per win
+        These bonuses are reasonable for conf tournament, not NCAA tourney.
+        When a real postseason exists, this gets a dedicated system.
+      - Hard cap: total movement clamped to ±SEASON_PRESTIGE_CAP (4.0)
+        before new prestige is written. No single season reshapes a program.
     """
     current = program["prestige_current"]
 
     games = wins + losses
     if games > 0:
-        win_pct = wins / games
-        # Expected win pct based on prestige
+        win_pct          = wins / games
         expected_win_pct = 0.35 + (current / 100) * 0.45
-        # Reduced multiplier: 6 instead of 10
-        performance_delta = (win_pct - expected_win_pct) * 6
+        performance_delta = (win_pct - expected_win_pct) * PERFORMANCE_MULTIPLIER
     else:
         performance_delta = 0
 
     tournament_bonus = 0
     if made_tournament:
-        tournament_bonus += 2
-        tournament_bonus += tournament_wins * 1.5
+        tournament_bonus += 0.5
+        tournament_bonus += tournament_wins * 0.75
 
-    new_prestige = current + performance_delta + tournament_bonus
+    total_delta  = performance_delta + tournament_bonus
+
+    # Hard cap: no program moves more than SEASON_PRESTIGE_CAP in one season
+    total_delta  = max(-SEASON_PRESTIGE_CAP, min(SEASON_PRESTIGE_CAP, total_delta))
+
+    new_prestige = current + total_delta
     new_prestige = max(1, min(100, new_prestige))
 
     program["prestige_current"] = round(new_prestige, 1)
@@ -314,17 +347,59 @@ if __name__ == "__main__":
               str(kentucky["prestige_current"]) + " (" + kentucky["prestige_grade"] + ")")
 
     print("")
-    print("=== Prestige Volatility Test -- v0.2 multiplier (6) vs v0.1 (10) ===")
-    print("  Simulating 3 exceptional seasons for a prestige-70 team:")
+    print("=== Prestige Volatility Test -- v0.3 vs v0.2 ===")
+    print("  Simulating 10 exceptional seasons for a prestige-54 team (Drake):")
+    print("  Should NOT become an elite program. Should plateau and get pushed back.")
+    print("")
     test_prog = build_sample_programs()[4]   # Drake
-    test_prog["prestige_current"] = 70
+    test_prog["prestige_current"] = 54
     test_prog["prestige_gravity"] = 52
-    for year in range(1, 4):
+    print("  {:<10} {:<12} {:<10} {:<10}".format("Season", "Prestige", "Grade", "Gravity"))
+    print("  " + "-" * 42)
+    for year in range(1, 11):
         update_prestige_for_results(test_prog, wins=28, losses=4,
                                     made_tournament=True, tournament_wins=2)
         apply_gravity_pull(test_prog)
-        print("  After year " + str(year) + ": " +
-              str(test_prog["prestige_current"]) + " (" + test_prog["prestige_grade"] + ")")
+        print("  {:<10} {:<12} {:<10} {:<10}".format(
+            "Year " + str(year),
+            str(test_prog["prestige_current"]),
+            test_prog["prestige_grade"],
+            str(test_prog["prestige_gravity"]),
+        ))
+
+    print("")
+    print("=== Collapse Test -- 10 terrible seasons for Kentucky ===")
+    print("  Should erode but NOT crater. Floor protects. Gravity pulls back.")
+    print("")
+    ky = build_sample_programs()[0]
+    ky["prestige_current"] = 92
+    ky["prestige_gravity"] = 90
+    print("  {:<10} {:<12} {:<10} {:<10}".format("Season", "Prestige", "Grade", "Gravity"))
+    print("  " + "-" * 42)
+    for year in range(1, 11):
+        update_prestige_for_results(ky, wins=8, losses=24,
+                                    made_tournament=False, tournament_wins=0)
+        apply_gravity_pull(ky)
+        print("  {:<10} {:<12} {:<10} {:<10}".format(
+            "Year " + str(year),
+            str(ky["prestige_current"]),
+            ky["prestige_grade"],
+            str(ky["prestige_gravity"]),
+        ))
+
+    print("")
+    print("=== Single Season Cap Verification ===")
+    print("  Max possible gain in one season should be <= " + str(SEASON_PRESTIGE_CAP))
+    cap_test = build_sample_programs()[4]
+    cap_test["prestige_current"] = 50
+    before = cap_test["prestige_current"]
+    update_prestige_for_results(cap_test, wins=32, losses=0,
+                                made_tournament=True, tournament_wins=10)
+    after = cap_test["prestige_current"]
+    delta = round(after - before, 2)
+    print("  Before: " + str(before) + "  After: " + str(after) +
+          "  Delta: " + str(delta) +
+          "  PASS" if abs(delta) <= SEASON_PRESTIGE_CAP + 0.01 else "  FAIL")
 
     print("")
     print("=== Coach Verification ===")
