@@ -11,6 +11,7 @@ from recruiting_commitments import resolve_full_recruiting_cycle, print_cycle_su
 from lifecycle import advance_season, print_lifecycle_summary
 from conference_tournament import simulate_all_conference_tournaments
 from tournament import simulate_ncaa_tournament, print_tournament_summary
+from transfer_portal import run_transfer_portal, print_portal_summary
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Season Calendar v0.7
@@ -1058,7 +1059,9 @@ def simulate_world_season(all_programs, season_year, verbose=True):
             continue
         simulate_conference_season(conf_programs, all_programs, season_year, verbose=False)
 
-    if verbose:
+    # National Top 25 + Conference Leaders suppressed from per-season output.
+    # Flip to verbose to re-enable for debugging.
+    if False:
         print_national_standings(all_programs, season_year)
 
     # Step 3b: Conference tournaments -- determines auto-bids for NCAA tournament
@@ -1067,8 +1070,10 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     )
 
     # Step 3c: NCAA Tournament
+    # verbose=False suppresses full bracket play-by-play.
+    # print_tournament_summary still runs -- shows champion, Final Four, cinderellas.
     all_programs, tournament_results = simulate_ncaa_tournament(
-        all_programs, auto_bids, season_year=season_year, verbose=verbose
+        all_programs, auto_bids, season_year=season_year, verbose=False
     )
     if verbose:
         print_tournament_summary(tournament_results, season_year)
@@ -1134,7 +1139,15 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         tourney_result = ncaa_result.get("result", "none")
         apply_buzz_decay(program, made_tourney, tourney_result, season_year)
 
-    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results
+    # Step 9: Transfer portal entry filter
+    # Players evaluate their situation and decide whether to enter the portal.
+    # Portal players are removed from rosters before recruiting runs.
+    # Destination matching is stubbed -- portal players currently exit the world.
+    all_programs, portal_pool, portal_report = run_transfer_portal(
+        all_programs, season_year=season_year, verbose=verbose
+    )
+
+    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report
 
 
 # -----------------------------------------
@@ -1298,7 +1311,7 @@ if __name__ == "__main__":
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
     for year in range(2024, 2029):
-        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results = simulate_world_season(
+        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
         print_prestige_movers(all_programs, start_prestiges, year)

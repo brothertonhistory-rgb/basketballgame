@@ -3,25 +3,33 @@ import uuid
 from names import generate_player_name
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Player System v0.5
+# COLLEGE HOOPS SIM -- Player System v0.6
 # System 2 of the Design Bible
+#
+# v0.6 CHANGES -- Portal Personality Attributes:
+#
+#   Five new permanent attributes added to every player at creation.
+#   These persist for the player's entire career and drive transfer
+#   portal decisions. They are NOT developable -- they are identity.
+#
+#   volatility         (1-20) -- random departure chance. High = unpredictable.
+#   playing_time_hunger (1-20) -- how badly sitting burns them.
+#   home_loyalty       (1-20) -- pull toward home state/region.
+#   prestige_ambition  (1-20) -- drive to play at the highest level.
+#   role_acceptance    (1-20) -- willingness to be a role player at a bigger school.
+#
+#   home_state added to every player. Used by portal destination scoring
+#   and recruiting interest. Two-letter state code (e.g. "TX", "OH").
+#
+#   ensure_player_personality() -- retroactive migration function.
+#   Call on any existing player dict to add missing portal attributes.
+#   Safe to call multiple times -- never overwrites existing values.
 #
 # v0.5 CHANGES -- Unique Player ID:
 #
 #   Every player now receives a unique integer ID at creation.
 #   Stored as player["player_id"] -- a monotonically incrementing
 #   integer from _PLAYER_ID_COUNTER.
-#
-#   WHY THIS MATTERS:
-#     - Almanac queries: find every season a specific player appeared
-#       in, across any program, even after transferring.
-#     - Transfer portal: player identity persists when he moves schools.
-#     - Career stat continuity: stats follow the player, not the name.
-#     - Future database migration: integer IDs index cleanly into SQLite.
-#     - Two players with the same name are unambiguous.
-#
-#   The ID is immutable -- it never changes after creation.
-#   It is the single source of truth for player identity.
 #
 # v0.4 CHANGES -- 1-1000 internal attribute scale.
 #   All skill attributes on 1-1000 scale.
@@ -104,6 +112,27 @@ BREAKTHROUGH_ARC_WEIGHTS = {
     "bust":          0.1,
 }
 
+# All US states for home_state assignment at world-build
+# Weighted by basketball player production
+_HOME_STATE_WEIGHTS = {
+    "CA": 120, "TX": 110, "FL": 95,  "GA": 90,  "NY": 80,
+    "OH": 75,  "IL": 75,  "NC": 70,  "NJ": 65,  "PA": 65,
+    "IN": 60,  "MI": 55,  "VA": 55,  "MD": 50,  "TN": 50,
+    "AL": 45,  "SC": 45,  "KY": 40,  "MO": 40,  "LA": 40,
+    "OK": 35,  "AR": 30,  "MS": 30,  "KS": 28,  "WI": 28,
+    "MN": 25,  "CO": 25,  "AZ": 25,  "WA": 22,  "OR": 20,
+    "CT": 20,  "MA": 20,  "DC": 18,  "NV": 18,  "UT": 15,
+    "IA": 15,  "NE": 12,  "WV": 12,  "DE": 10,  "RI": 8,
+    "NH": 6,   "ME": 6,   "VT": 5,   "WY": 5,   "MT": 5,
+    "ID": 5,   "SD": 4,   "ND": 4,   "AK": 3,   "HI": 3,
+}
+
+
+def _pick_home_state():
+    states  = list(_HOME_STATE_WEIGHTS.keys())
+    weights = list(_HOME_STATE_WEIGHTS.values())
+    return random.choices(states, weights=weights, k=1)[0]
+
 
 # -----------------------------------------
 # CEILING CONVERSION
@@ -116,6 +145,67 @@ def _potential_to_attr_ceiling(potential_high):
     Cap at 950 -- 1000 reserved for future special events only.
     """
     return min(950, int(200 + (potential_high / 100.0) * 750))
+
+
+# -----------------------------------------
+# PORTAL PERSONALITY GENERATION
+# -----------------------------------------
+
+def generate_portal_personality():
+    """
+    Generates the five permanent portal personality attributes.
+    All on 1-20 scale, same as mental attributes.
+    These are identity traits -- they never develop or change.
+
+    Attribute correlations are intentional:
+      High prestige_ambition + low role_acceptance = only transfers UP to start.
+      High volatility + high home_loyalty = unpredictable but ends up close to home.
+      Low playing_time_hunger + high home_loyalty = stays put unless pushed.
+    """
+    return {
+        # How likely to leave even when things are fine.
+        # High = restless. Low = stable unless something real happens.
+        "volatility":          _rand_mental(2, 8),
+
+        # How much sitting on the bench burns them.
+        # High = will leave after one bad minutes season.
+        # Low = patient, willing to wait their turn.
+        "playing_time_hunger": _rand_mental(5, 15),
+
+        # Pull toward home state/region.
+        # High = will always factor in proximity. Low = goes wherever.
+        "home_loyalty":        _rand_mental(3, 14),
+
+        # Drive to play at the highest prestige level possible.
+        # High = will seek Blue Blood or Power conf if given the chance.
+        # Low = fine wherever, prestige doesn't motivate them.
+        "prestige_ambition":   _rand_mental(4, 14),
+
+        # Willingness to be a role player at a bigger school.
+        # High = happy starting fewer minutes if the stage is bigger.
+        # Low = must start. Will not accept bench role anywhere.
+        "role_acceptance":     _rand_mental(3, 13),
+    }
+
+
+def ensure_player_personality(player):
+    """
+    Retroactive migration function. Adds portal personality attributes
+    and home_state to any existing player dict that's missing them.
+
+    Safe to call multiple times -- never overwrites existing values.
+    This is called at portal entry filter time so existing world-build
+    players get personality assigned on first portal evaluation.
+    """
+    if "volatility" not in player:
+        personality = generate_portal_personality()
+        for key, val in personality.items():
+            player[key] = val
+
+    if "home_state" not in player:
+        player["home_state"] = _pick_home_state()
+
+    return player
 
 
 # -----------------------------------------
@@ -324,6 +414,8 @@ def create_player(name, position, year, conference="",
     elif heritage is None:
         _, heritage = generate_player_name(conference=conference)
 
+    personality = generate_portal_personality()
+
     player = {
         # --- IDENTITY ---
         "player_id": _next_player_id(),   # v0.5: unique immutable integer ID
@@ -331,6 +423,9 @@ def create_player(name, position, year, conference="",
         "position":  position,
         "year":      year,
         "heritage":  heritage,
+
+        # --- GEOGRAPHY (v0.6) ---
+        "home_state": _pick_home_state(),
 
         # --- SKILL ATTRIBUTES (1-1000) ---
         "catch_and_shoot": shooting["catch_and_shoot"],
@@ -366,6 +461,13 @@ def create_player(name, position, year, conference="",
         "coachability":  mental["coachability"],
         "work_ethic":    mental["work_ethic"],
         "leadership":    mental["leadership"],
+
+        # --- PORTAL PERSONALITY (1-20, permanent identity -- never develops) ---
+        "volatility":           personality["volatility"],
+        "playing_time_hunger":  personality["playing_time_hunger"],
+        "home_loyalty":         personality["home_loyalty"],
+        "prestige_ambition":    personality["prestige_ambition"],
+        "role_acceptance":      personality["role_acceptance"],
 
         # --- POTENTIAL (1-100 talent abstraction) ---
         "potential_low":  potential["low"],
@@ -681,6 +783,7 @@ def generate_team(program_name, prestige=50, roster_size=13):
     """
     Generates a full roster for a program at world-build.
     Each player gets a unique player_id via create_player().
+    All players get portal personality attributes at creation.
     """
     position_slots = {
         "PG": 2, "SG": 3, "SF": 3, "PF": 3, "C": 2,
@@ -773,55 +876,48 @@ if __name__ == "__main__":
     from recruiting import POSITION_ARCHETYPES, ALL_ATTRIBUTES
 
     print("=" * 65)
-    print("  PLAYER SYSTEM v0.5 -- UNIQUE ID + 1-1000 SCALE TEST")
+    print("  PLAYER SYSTEM v0.6 -- PORTAL PERSONALITY TEST")
     print("=" * 65)
 
     print("")
-    print("=== Player ID verification ===")
+    print("=== Player ID + personality verification ===")
     p1 = create_player("Marcus Dillard", "PG", "Junior")
     p2 = create_player("Tyrese Holloway", "SG", "Senior")
     p3 = create_player("DeShawn Price", "C", "Junior")
-    print("  " + p1["name"] + "  player_id: " + str(p1["player_id"]))
-    print("  " + p2["name"] + "  player_id: " + str(p2["player_id"]))
-    print("  " + p3["name"] + "  player_id: " + str(p3["player_id"]))
-    print("  IDs are unique and monotonically increasing: " +
-          str(p1["player_id"] < p2["player_id"] < p3["player_id"]))
+    for p in [p1, p2, p3]:
+        print("  ID:{:<6} {:<22} {:<5} home:{:<4} vol:{:<3} pt_hunger:{:<3} loyalty:{:<3} ambition:{:<3} role_acc:{}".format(
+            p["player_id"], p["name"][:21], p["position"],
+            p["home_state"],
+            p["volatility"], p["playing_time_hunger"],
+            p["home_loyalty"], p["prestige_ambition"], p["role_acceptance"]
+        ))
 
     print("")
-    print("=== Roster generation -- IDs persist across full team ===")
-    team = generate_team("Oklahoma State", prestige=62)
-    print("  Generated " + str(len(team["roster"])) + " players")
-    ids  = [p["player_id"] for p in team["roster"]]
-    print("  All IDs unique: " + str(len(ids) == len(set(ids))))
-    print("  ID range: " + str(min(ids)) + " to " + str(max(ids)))
-    print("")
-    for p in team["roster"][:5]:
-        print("  ID:{:<6} {:<22} {:<5} {:<12}".format(
-            p["player_id"], p["name"][:21], p["position"], p["year"]))
+    print("=== ensure_player_personality() migration test ===")
+    # Simulate an old player dict without personality
+    old_player = {"name": "Old Timer", "position": "SF", "year": "Senior",
+                  "player_id": 9999, "finishing": 600}
+    print("  Before migration -- has volatility: " + str("volatility" in old_player))
+    ensure_player_personality(old_player)
+    print("  After migration  -- has volatility: " + str("volatility" in old_player))
+    print("  home_state: " + old_player["home_state"])
+    print("  volatility: " + str(old_player["volatility"]))
+    # Call again -- should not overwrite
+    original_vol = old_player["volatility"]
+    ensure_player_personality(old_player)
+    print("  Called again -- volatility unchanged: " + str(old_player["volatility"] == original_vol))
 
     print("")
-    print("=== Overall roster quality by prestige tier (200 rosters each) ===")
-    tier_configs = [
-        ("elite(92)",   92),
-        ("good(70)",    70),
-        ("average(50)", 50),
-        ("low(30)",     30),
-        ("bottom(15)",  15),
-    ]
-    print("  {:<14} {:<12} {:<8}".format("Tier", "Avg Primary", "Grade"))
-    print("  " + "-" * 34)
-    for tier_name, prestige in tier_configs:
-        all_primary_vals = []
-        for _ in range(200):
-            t      = generate_team("Test", prestige=prestige)
-            roster = t["roster"]
-            for p in roster:
-                pos          = p["position"]
-                arch         = POSITION_ARCHETYPES.get(pos, {})
-                primary_attrs = arch.get("primary", [])
-                for attr in primary_attrs:
-                    if attr in p:
-                        all_primary_vals.append(p[attr])
-        avg = sum(all_primary_vals) / max(1, len(all_primary_vals))
-        print("  {:<14} {:<12} {:<8}".format(
-            tier_name, str(round(avg)), display_attr(avg, "letter")))
+    print("=== Portal personality distribution (1000 players) ===")
+    attrs = ["volatility", "playing_time_hunger", "home_loyalty",
+             "prestige_ambition", "role_acceptance"]
+    totals = {a: 0 for a in attrs}
+    for _ in range(1000):
+        pp = generate_portal_personality()
+        for a in attrs:
+            totals[a] += pp[a]
+    print("  {:<22} {:<8}".format("Attribute", "Avg (1-20)"))
+    print("  " + "-" * 30)
+    for a in attrs:
+        avg = round(totals[a] / 1000, 1)
+        print("  {:<22} {}".format(a, avg))
