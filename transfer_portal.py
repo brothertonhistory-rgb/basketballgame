@@ -473,31 +473,693 @@ def run_portal_entry_filter(all_programs, season_year, verbose=True):
 
 
 # -----------------------------------------
-# STUB: DESTINATION MATCHING
-# Phase 2 -- not yet built.
-# Portal pool players currently exit the world (undrafted).
+# DESTINATION MATCHING -- PHASE 2
+#
+# Four-phase matching engine:
+#
+#   Phase A: Player self-nomination
+#     Each player builds a ranked target list based on:
+#       - Prestige band (ambition sets ceiling, current prestige sets floor)
+#       - Offensive role projection (role_acceptance sets how deep they'll slot)
+#       - Personal fit score (home proximity, prestige fit, role quality)
+#     Player approaches top 5 schools on their list.
+#
+#   Phase B: Program needs assessment
+#     Each program identifies open scholarship slots and positional gaps.
+#     Generates a ranked want list from the portal pool.
+#
+#   Phase C: Tiered matching
+#     Round 1: Player approaches Dream school. Mutual match = commit.
+#     Round 2: If a lower school offers, player sends hard yes/no up the list.
+#       Best yes above the offer wins. If nobody above says yes, take the offer.
+#
+#   Phase D: Open pool sweep
+#     Unmatched players and programs with open slots do a general round.
+#     Looser filters, wider nets.
+#
+#   Phase E: Undrafted
+#     Still unmatched after Phase D -- exit the world.
+# -----------------------------------------
+
+# How many schools a player proactively approaches in Phase A
+PLAYER_APPROACH_COUNT = 5
+
+# Scholarship cap -- hard 13
+SCHOLARSHIP_CAP = 13
+
+# Quality floor by prestige tier for program acceptance
+# (base floor, senior_floor)
+# Senior floor is lower -- one-year depth guys accepted more readily
+PROGRAM_QUALITY_FLOORS = {
+    "blue_blood":    (750, 550),   # 95+
+    "elite":         (700, 500),   # 79-94
+    "strong":        (620, 430),   # 59-78
+    "average":       (530, 360),   # 39-58
+    "below_average": (430, 280),   # 21-38
+    "poor":          (300, 150),   # 1-20
+}
+
+# Prestige band a player targets based on their quality and ambition
+# Player quality -> realistic prestige ceiling they can reach
+def _quality_to_prestige_ceiling(quality, prestige_ambition):
+    """
+    Maps a player's primary quality score to the highest prestige program
+    they realistically target. Ambition scales the ceiling upward.
+    """
+    # Base ceiling from quality alone
+    if quality >= 850:   base = 100
+    elif quality >= 750: base = 90
+    elif quality >= 650: base = 78
+    elif quality >= 580: base = 65
+    elif quality >= 500: base = 52
+    elif quality >= 420: base = 40
+    else:                base = 28
+
+    # Ambition bonus -- high ambition players shoot higher
+    ambition_bonus = (prestige_ambition - 10) / 10.0 * 12
+    return min(100, base + ambition_bonus)
+
+
+def _quality_to_prestige_floor(quality, current_prestige):
+    """
+    Minimum prestige a player will consider.
+    Ambitious players won't lateral or go down.
+    """
+    # Never go below current program prestige (no lateral moves)
+    # unless current program is already at the bottom
+    if current_prestige <= 15:
+        return max(1, current_prestige - 5)
+    return max(1, current_prestige)
+
+
+# -----------------------------------------
+# OFFENSIVE HIERARCHY
+# -----------------------------------------
+
+def _offensive_score(player):
+    """
+    Scores a player's offensive threat level.
+    Position-aware: guards weight ball creation, bigs weight post dominance.
+    Used to rank players within a roster and project where a transfer slots in.
+
+    Returns a float on roughly the same scale as primary attributes (1-1000).
+    """
+    pos = player.get("position", "SF")
+
+    scoring = (
+        player.get("finishing",    400) * 1.0 +
+        player.get("mid_range",    400) * 0.6 +
+        player.get("three_point",  400) * 0.8 +
+        player.get("post_scoring", 400) * 0.7 +
+        player.get("free_throw",   400) * 0.3
+    ) / 3.4   # normalize divisor = sum of weights
+
+    if pos in ("PG", "SG"):
+        # Guards: creation matters -- ball handling and court vision add usage weight
+        usage = (
+            player.get("ball_handling", 400) * 0.5 +
+            player.get("court_vision",  400) * 0.3
+        ) / 0.8
+        return scoring * 0.65 + usage * 0.35
+
+    elif pos == "SF":
+        usage = player.get("ball_handling", 400) * 0.3
+        return scoring * 0.75 + usage * 0.25
+
+    else:  # PF, C
+        # Bigs: post dominance + rebounding as usage proxy
+        post_dom = (
+            player.get("post_scoring", 400) * 0.6 +
+            player.get("rebounding",   400) * 0.4
+        )
+        return scoring * 0.60 + post_dom * 0.40
+
+
+def _projected_offensive_slot(player, program_roster):
+    """
+    Projects where a transfer would rank offensively on a target roster.
+    Returns slot number: 1 = top option, 2 = second option, etc.
+    Lower is better for a player who wants to be the guy.
+    """
+    if not program_roster:
+        return 1
+
+    transfer_score = _offensive_score(player)
+    scores = sorted(
+        [_offensive_score(p) for p in program_roster],
+        reverse=True
+    )
+
+    slot = 1
+    for s in scores:
+        if transfer_score < s:
+            slot += 1
+        else:
+            break
+
+    return slot
+
+
+# -----------------------------------------
+# PROGRAM NEEDS ASSESSMENT
+# -----------------------------------------
+
+def _get_open_slots(program):
+    """Returns number of open scholarship slots (max 13 - current roster)."""
+    return max(0, SCHOLARSHIP_CAP - len(program.get("roster", [])))
+
+
+def _get_positional_needs(program):
+    """
+    Returns a dict of positional need scores.
+    Higher = more urgent need at that position.
+    0 = position is full (3+ players)
+    1 = light (2 players)
+    2 = thin (1 player)
+    3 = emergency (0 players)
+    """
+    roster = program.get("roster", [])
+    pos_counts = {"PG": 0, "SG": 0, "SF": 0, "PF": 0, "C": 0}
+    for p in roster:
+        pos = p.get("position", "SF")
+        if pos in pos_counts:
+            pos_counts[pos] += 1
+
+    needs = {}
+    for pos, count in pos_counts.items():
+        if count == 0:   needs[pos] = 3
+        elif count == 1: needs[pos] = 2
+        elif count == 2: needs[pos] = 1
+        else:            needs[pos] = 0
+    return needs
+
+
+def _prestige_tier_label(prestige):
+    """Maps prestige score to tier label for quality floor lookup."""
+    if prestige >= 95:   return "blue_blood"
+    elif prestige >= 79: return "elite"
+    elif prestige >= 59: return "strong"
+    elif prestige >= 39: return "average"
+    elif prestige >= 21: return "below_average"
+    else:                return "poor"
+
+
+def _program_will_accept(program, player, open_slots, pos_needs,
+                         enforce_ceiling=True):
+    """
+    Returns True if a program will accept this portal player.
+
+    open_slots is the authoritative count -- never re-reads roster length.
+    This is critical: roster dict is not updated during matching, only
+    prog_open_slots is decremented. Always pass the tracked value.
+
+    Conditions:
+      1. Open scholarship slot exists (uses passed open_slots)
+      2. Position fills a need (or at least isn't already packed)
+      3. Player quality clears the prestige-relative floor
+         -- Seniors get a lower floor (one-year depth value)
+         -- Emergency positional need lowers floor further
+      4. Player quality doesn't exceed prestige-relative ceiling
+         -- A quality-900 player won't land at a prestige-15 program
+         -- enforce_ceiling=False in open pool for relaxed matching
+    """
+    if open_slots <= 0:
+        return False
+
+    pos  = player.get("position", "SF")
+    need = pos_needs.get(pos, 0)
+
+    # If position is completely full (need=0), only accept if player is
+    # significantly better than current weakest at that position
+    if need == 0:
+        roster = program.get("roster", [])
+        pos_players = [p for p in roster if p.get("position") == pos]
+        if pos_players:
+            weakest = min(_offensive_score(p) for p in pos_players)
+            transfer_score = _offensive_score(player)
+            if transfer_score < weakest * 1.10:
+                return False
+
+    prestige   = program.get("prestige_current", 50)
+    tier_label = _prestige_tier_label(prestige)
+    base_floor, senior_floor = PROGRAM_QUALITY_FLOORS.get(
+        tier_label, (500, 350)
+    )
+
+    year    = player.get("year", "Sophomore")
+    quality = _get_primary_quality(player)
+
+    floor = senior_floor if year == "Senior" else base_floor
+
+    # Emergency need -- lower floor 15%
+    if need == 3:
+        floor = int(floor * 0.85)
+
+    if quality < floor:
+        return False
+
+    # Quality ceiling -- programs won't take a player far above their level
+    # A quality-900 player at a prestige-15 program is implausible.
+    # Ceiling = base_floor * 2.2 gives reasonable headroom.
+    # Only enforced in Phase C (not open pool Phase D which uses enforce_ceiling=False).
+    if enforce_ceiling:
+        ceiling = base_floor * 2.2
+        if quality > ceiling:
+            return False
+
+    return True
+
+
+# -----------------------------------------
+# PLAYER TARGET LIST BUILDER
+# -----------------------------------------
+
+def _build_player_target_list(player, all_programs):
+    """
+    Builds a ranked list of target schools for a portal player.
+
+    Filters by:
+      1. Prestige band (ambition ceiling, current prestige floor)
+      2. Offensive role projection (role_acceptance sets max slot)
+      3. Not their current school
+
+    Scores each eligible school:
+      - Prestige fit (how close to their ceiling, not too far below)
+      - Projected offensive slot (lower slot = better for low role_acceptance)
+      - Home proximity (home_loyalty weight)
+      - Slight noise (personal preference)
+
+    Returns top PLAYER_APPROACH_COUNT schools as ordered list.
+    """
+    ambition      = player.get("prestige_ambition", 10)
+    role_accept   = player.get("role_acceptance", 10)
+    home_loyalty  = player.get("home_loyalty", 10)
+    home_state    = player.get("home_state", "TX")
+    current_prog  = player.get("portal_from", "")
+    quality       = _get_primary_quality(player)
+
+    # Prestige band
+    p_ceiling = _quality_to_prestige_ceiling(quality, ambition)
+    p_floor   = _quality_to_prestige_floor(quality,
+                    player.get("_current_prestige", 30))
+
+    # Role band: how deep into a roster will they accept?
+    # role_acceptance 1-5: only top-2 option
+    # role_acceptance 6-12: up to top-3
+    # role_acceptance 13-20: up to top-4
+    if role_accept <= 5:
+        max_slot = 2
+    elif role_accept <= 12:
+        max_slot = 3
+    else:
+        max_slot = 4
+
+    scored = []
+    for prog in all_programs:
+        if prog["name"] == current_prog:
+            continue
+
+        prestige = prog.get("prestige_current", 50)
+        if prestige < p_floor or prestige > p_ceiling:
+            continue
+
+        # Check offensive slot fit
+        slot = _projected_offensive_slot(player, prog.get("roster", []))
+        if slot > max_slot:
+            continue
+
+        # Score this school
+        # Prestige fit: sweet spot is near ceiling, not too far below
+        prestige_gap   = p_ceiling - prestige
+        prestige_score = max(0, 40 - prestige_gap)   # closer to ceiling = higher score
+
+        # Slot score: slot 1 = best, slot 4 = worst
+        slot_score = (5 - slot) * 15   # slot 1 = 60, slot 2 = 45, etc.
+
+        # Home proximity score
+        prog_state    = prog.get("state", "")
+        dist_tier     = get_distance_tier(home_state, prog_state)
+        proximity_scores = {
+            "same_state":      25,
+            "same_region":     15,
+            "adjacent_region": 8,
+            "far":             0,
+        }
+        proximity_score = proximity_scores.get(dist_tier, 0)
+        proximity_weighted = proximity_score * (home_loyalty / 10.0)
+
+        # Small random noise -- personal preference, intangibles
+        noise = random.gauss(0, 5)
+
+        total_score = prestige_score + slot_score + proximity_weighted + noise
+        scored.append((prog, total_score, slot))
+
+    # Sort by score descending -- player's ranked preference list
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [(prog, slot) for prog, score, slot in scored[:PLAYER_APPROACH_COUNT]]
+
+
+# -----------------------------------------
+# MAIN DESTINATION MATCHING ENGINE
 # -----------------------------------------
 
 def run_portal_destination_matching(all_programs, portal_pool, season_year, verbose=True):
     """
-    STUB -- Phase 2, not yet built.
+    Full Phase A/B/C/D destination matching engine.
 
-    Eventually: programs post roster needs, players self-select destinations
-    based on prestige fit, playing time probability, and home proximity.
-    Players who don't find a match exit the world as "undrafted".
-
-    For now: all portal players become undrafted and are discarded.
-    Roster slots freed by their departure are available for recruiting.
+    Phase A: Players build ranked target lists and approach top schools.
+    Phase B: Programs assess needs and build want lists.
+    Phase C: Tiered matching -- mutual matches first, then ego-check cascades.
+    Phase D: Open pool sweep for unmatched players/programs.
+    Phase E: Remaining unmatched players exit the world (undrafted).
     """
-    undrafted_count = 0
-    for player in portal_pool:
-        player["portal_status"] = "undrafted"
-        undrafted_count += 1
+    if not portal_pool:
+        return all_programs, portal_pool
 
-    if verbose and undrafted_count > 0:
-        print("  [Portal] Destination matching not yet built -- " +
-              str(undrafted_count) + " portal players exit the world (undrafted)")
-        print("  [Portal] Their roster slots are available for recruiting.")
+    # Build a quick lookup: program name -> program dict
+    prog_lookup = {p["name"]: p for p in all_programs}
+
+    # Stamp each portal player with their origin program's prestige
+    # so target list builder can use it without re-searching
+    for player in portal_pool:
+        origin = prog_lookup.get(player.get("portal_from", ""))
+        player["_current_prestige"] = origin["prestige_current"] if origin else 30
+
+    # -----------------------------------------------
+    # PHASE A: Player target lists
+    # -----------------------------------------------
+    player_targets = {}   # player_id -> [(program, projected_slot), ...]
+    for player in portal_pool:
+        pid = player["player_id"]
+        player_targets[pid] = _build_player_target_list(player, all_programs)
+
+    # -----------------------------------------------
+    # PHASE B: Program needs
+    # -----------------------------------------------
+    # Snapshot open slots and needs at start of matching
+    # Updated as players commit
+    prog_open_slots = {
+        p["name"]: _get_open_slots(p) for p in all_programs
+    }
+    prog_pos_needs = {
+        p["name"]: _get_positional_needs(p) for p in all_programs
+    }
+
+    # Track committed players by player_id
+    committed = set()
+    # Track which program each player landed at
+    player_destination = {}   # player_id -> program_name
+
+    # -----------------------------------------------
+    # PHASE C: Tiered matching
+    # -----------------------------------------------
+
+    # Build approach registry: program_name -> list of players who approached
+    # Each entry is (player, rank_on_player_list) so program knows how desired it is
+    program_approaches = {p["name"]: [] for p in all_programs}
+
+    for player in portal_pool:
+        pid     = player["player_id"]
+        targets = player_targets.get(pid, [])
+        for rank, (prog, slot) in enumerate(targets):
+            program_approaches[prog["name"]].append((player, rank))
+
+    # Round 1: Dream school mutual matches
+    # Player approached school + school wants player = immediate commit
+    for player in portal_pool:
+        pid     = player["player_id"]
+        targets = player_targets.get(pid, [])
+        if not targets:
+            continue
+
+        dream_prog, dream_slot = targets[0]
+        prog_name = dream_prog["name"]
+
+        open_slots = prog_open_slots.get(prog_name, 0)
+        pos_needs  = prog_pos_needs.get(prog_name, {})
+
+        if _program_will_accept(dream_prog, player, open_slots, pos_needs):
+            # Mutual match -- player commits to dream school
+            committed.add(pid)
+            player_destination[pid] = prog_name
+            prog_open_slots[prog_name] = max(0, open_slots - 1)
+            # Update positional needs
+            pos = player.get("position", "SF")
+            prog_pos_needs[prog_name][pos] = max(
+                0, prog_pos_needs[prog_name].get(pos, 0) - 1
+            )
+
+    # Round 2: Ego-check cascade
+    # Programs with open slots make offers to portal players on their want list.
+    # When a player receives an offer from school ranked < #1, they send
+    # a hard yes/no request up the list to every school ranked above.
+
+    # Build each program's portal want list
+    prog_want_lists = {}
+    for prog in all_programs:
+        prog_name  = prog["name"]
+        open_slots = prog_open_slots.get(prog_name, 0)
+        if open_slots <= 0:
+            continue
+
+        pos_needs = prog_pos_needs.get(prog_name, {})
+        candidates = []
+
+        for player in portal_pool:
+            if player["player_id"] in committed:
+                continue
+            if not _program_will_accept(prog, player, open_slots, pos_needs):
+                continue
+            # Score this player for this program's needs
+            pos  = player.get("position", "SF")
+            need = pos_needs.get(pos, 0)
+            q    = _get_primary_quality(player)
+            # Programs prefer players who fill urgent needs and are higher quality
+            score = q + (need * 50)
+            candidates.append((player, score))
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        prog_want_lists[prog_name] = [p for p, _ in candidates]
+
+    # Ego-check round: process uncommitted players
+    for player in portal_pool:
+        pid = player["player_id"]
+        if pid in committed:
+            continue
+
+        targets = player_targets.get(pid, [])
+        if not targets:
+            continue
+
+        # Find the best offer this player has received (lowest rank = best)
+        # An "offer" = program wants them AND has a slot
+        best_offer_rank = None
+        best_offer_prog = None
+
+        for rank, (prog, slot) in enumerate(targets):
+            prog_name  = prog["name"]
+            open_slots = prog_open_slots.get(prog_name, 0)
+            pos_needs  = prog_pos_needs.get(prog_name, {})
+
+            want_list = prog_want_lists.get(prog_name, [])
+            player_wanted = any(p["player_id"] == pid for p in want_list)
+
+            if player_wanted and _program_will_accept(
+                prog, player, open_slots, pos_needs
+            ):
+                best_offer_rank = rank
+                best_offer_prog = prog
+                break   # take lowest rank (best school) that has offered
+
+        if best_offer_prog is None:
+            continue   # no offers -- falls to open pool
+
+        # Ego check: send hard yes/no to every school ranked ABOVE the offer
+        accepted_prog = best_offer_prog
+        accepted_rank = best_offer_rank
+
+        for rank in range(best_offer_rank):
+            prog, slot = targets[rank]
+            prog_name  = prog["name"]
+            open_slots = prog_open_slots.get(prog_name, 0)
+            pos_needs  = prog_pos_needs.get(prog_name, {})
+
+            if _program_will_accept(prog, player, open_slots, pos_needs):
+                # School above the offer said YES -- take the best one
+                accepted_prog = prog
+                accepted_rank = rank
+                break   # takes the highest-ranked yes
+
+        # Commit to accepted school
+        committed.add(pid)
+        player_destination[pid] = accepted_prog["name"]
+        prog_name = accepted_prog["name"]
+        prog_open_slots[prog_name] = max(0, prog_open_slots[prog_name] - 1)
+        pos = player.get("position", "SF")
+        prog_pos_needs[prog_name][pos] = max(
+            0, prog_pos_needs[prog_name].get(pos, 0) - 1
+        )
+
+    # -----------------------------------------------
+    # PHASE D: Open pool sweep
+    # -----------------------------------------------
+    # Looser matching for remaining unmatched players.
+    # Still enforces a prestige band -- quality-900 players don't land
+    # at prestige-15 programs just because Phase C didn't place them.
+    # Not everyone finds a spot -- realistic undrafted rate expected.
+
+    for player in portal_pool:
+        pid = player["player_id"]
+        if pid in committed:
+            continue
+
+        quality      = _get_primary_quality(player)
+        ambition     = player.get("prestige_ambition", 10)
+        home_state   = player.get("home_state", "TX")
+        year         = player.get("year", "Sophomore")
+
+        # Prestige band for open pool -- relaxed but not eliminated
+        # Player will accept lower than their Phase A floor, but
+        # quality still limits the ceiling of what they'd realistically land at
+        open_p_ceiling = _quality_to_prestige_ceiling(quality, ambition)
+        # Floor drops significantly -- desperate players accept worse situations
+        open_p_floor   = max(1, player.get("_current_prestige", 30) - 20)
+
+        candidates = []
+        for prog in all_programs:
+            prog_name  = prog["name"]
+            open_slots = prog_open_slots.get(prog_name, 0)
+            if open_slots <= 0:
+                continue
+            if prog_name == player.get("portal_from", ""):
+                continue
+
+            prestige = prog.get("prestige_current", 50)
+
+            # Enforce prestige band -- quality ceiling still matters
+            if prestige > open_p_ceiling:
+                continue
+            if prestige < open_p_floor:
+                continue
+
+            pos_needs = prog_pos_needs.get(prog_name, {})
+
+            # Use relaxed acceptance (no ceiling enforcement, 20% lower floor)
+            tier_label = _prestige_tier_label(prestige)
+            base_floor, senior_floor = PROGRAM_QUALITY_FLOORS.get(
+                tier_label, (500, 350)
+            )
+            floor = (senior_floor if year == "Senior" else base_floor) * 0.80
+            if quality < floor:
+                continue
+
+            pos  = player.get("position", "SF")
+            need = pos_needs.get(pos, 0)
+
+            # Home proximity bonus
+            prog_state = prog.get("state", "")
+            dist_tier  = get_distance_tier(home_state, prog_state)
+            prox = {"same_state": 20, "same_region": 10,
+                    "adjacent_region": 5, "far": 0}.get(dist_tier, 0)
+
+            score = quality + (need * 40) + prox + random.gauss(0, 10)
+            candidates.append((prog, score))
+
+        if not candidates:
+            continue
+
+        # Not everyone in the open pool gets placed.
+        # High-quality players who can't find a realistic fit go undrafted
+        # rather than landing at a random school.
+        # Chance of placement scales down with quality mismatch.
+        # Base 70% chance, reduced further for high-quality players
+        # whose best option in the open pool is still a bad fit.
+        best_prog_prestige = max(c[0].get("prestige_current", 50)
+                                 for c in candidates)
+        quality_prestige_gap = max(0, open_p_ceiling - best_prog_prestige)
+        # Gap > 30 means best available is well below what they deserve
+        placement_chance = 0.70 - (quality_prestige_gap / 100.0) * 0.40
+        placement_chance = max(0.25, min(0.90, placement_chance))
+
+        if random.random() > placement_chance:
+            continue   # undrafted -- couldn't find a realistic fit
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_prog = candidates[0][0]
+        prog_name = best_prog["name"]
+
+        committed.add(pid)
+        player_destination[pid] = prog_name
+        prog_open_slots[prog_name] = max(0, prog_open_slots[prog_name] - 1)
+        pos = player.get("position", "SF")
+        prog_pos_needs[prog_name][pos] = max(
+            0, prog_pos_needs[prog_name].get(pos, 0) - 1
+        )
+
+    # -----------------------------------------------
+    # PHASE E: Finalize -- add committed players to rosters
+    # Hard 13-scholarship cap enforced here as a safety net.
+    # prog_open_slots should already prevent overcrowding but
+    # this guarantees no roster ever exceeds SCHOLARSHIP_CAP.
+    # -----------------------------------------------
+    committed_count  = 0
+    undrafted_count  = 0
+
+    for player in portal_pool:
+        pid = player["player_id"]
+
+        if pid in player_destination:
+            dest_name = player_destination[pid]
+            dest_prog = prog_lookup.get(dest_name)
+
+            if dest_prog is not None:
+                # Hard cap check -- never exceed 13
+                if len(dest_prog.get("roster", [])) >= SCHOLARSHIP_CAP:
+                    player["portal_status"] = "undrafted"
+                    undrafted_count += 1
+                    continue
+
+                # Reset portal state for new school
+                player["portal_status"]   = "committed"
+                player["portal_dest"]     = dest_name
+                player["previous_school"] = player.get("portal_from", "")
+                # Classic era: sit-out year flag already set
+                dest_prog["roster"].append(player)
+                committed_count += 1
+            else:
+                player["portal_status"] = "undrafted"
+                undrafted_count += 1
+        else:
+            player["portal_status"] = "undrafted"
+            undrafted_count += 1
+
+    # Clean up temp prestige stamp
+    for player in portal_pool:
+        player.pop("_current_prestige", None)
+
+    if verbose:
+        placed_pct = round(committed_count / max(1, len(portal_pool)) * 100, 1)
+        print("  Placed: " + str(committed_count) +
+              "  |  Undrafted: " + str(undrafted_count) +
+              "  |  Placement rate: " + str(placed_pct) + "%")
+
+        # Notable placements -- highest quality transfers and where they landed
+        notable = sorted(
+            [p for p in portal_pool if p.get("portal_status") == "committed"],
+            key=lambda p: _get_primary_quality(p),
+            reverse=True
+        )[:6]
+        if notable:
+            print("")
+            print("  Notable placements:")
+            for p in notable:
+                q = int(_get_primary_quality(p))
+                print("    {:<22} {:<5} {:<12} {} -> {}  (quality: {})".format(
+                    p["name"][:21], p.get("position", "?"), p.get("year", "?"),
+                    p.get("portal_from", "?")[:20],
+                    p.get("portal_dest", "?")[:20],
+                    q
+                ))
 
     return all_programs, portal_pool
 
@@ -510,12 +1172,12 @@ def run_portal_destination_matching(all_programs, portal_pool, season_year, verb
 def run_transfer_portal(all_programs, season_year, verbose=True):
     """
     Runs the complete portal cycle for a season.
-    Phase 1 (entry filter) is live.
-    Phase 2 (destination matching) is stubbed.
+    Phase 1: Entry filter (who leaves)
+    Phase 2: Destination matching (where they go)
 
     Returns:
-        all_programs  -- with portal players removed from rosters
-        portal_pool   -- list of player dicts who entered (for logging/future use)
+        all_programs  -- portal players removed from origins, added to destinations
+        portal_pool   -- list of all player dicts who entered the portal
         portal_report -- summary dict
     """
     if verbose:
@@ -637,7 +1299,27 @@ if __name__ == "__main__":
         for p in thin[:10]:
             print("  " + p["name"] + ": " + str(len(p["roster"])) + " players")
     else:
-        print("PASS: All programs have 7+ players after portal exit.")
+        print("PASS: All programs have 7+ players after portal.")
+
+    print("")
+    print("=== PLACEMENT VERIFICATION ===")
+    committed = [p for p in portal_pool if p.get("portal_status") == "committed"]
+    undrafted = [p for p in portal_pool if p.get("portal_status") == "undrafted"]
+    print("  Total portal:  " + str(len(portal_pool)))
+    print("  Placed:        " + str(len(committed)))
+    print("  Undrafted:     " + str(len(undrafted)))
+
+    print("")
+    print("=== SAMPLE MOVES (top 15 by quality) ===")
+    top_movers = sorted(committed, key=lambda p: _get_primary_quality(p), reverse=True)[:15]
+    print("  {:<22} {:<5} {:<12} {:<24} -> {}".format(
+        "Name", "Pos", "Year", "From", "To"))
+    print("  " + "-" * 80)
+    for p in top_movers:
+        print("  {:<22} {:<5} {:<12} {:<24} -> {}".format(
+            p["name"][:21], p.get("position","?"), p.get("year","?"),
+            p.get("portal_from","?")[:23], p.get("portal_dest","?")
+        ))
 
     print("")
     print("=== PERSONALITY DISTRIBUTION IN PORTAL POOL ===")

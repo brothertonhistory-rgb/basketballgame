@@ -252,6 +252,9 @@ def _enroll_recruits(program, recruiting_class):
 
     enrolled = 0
     for recruit in incoming:
+        # Hard 13-scholarship cap -- never exceed it during enrollment
+        if len(program["roster"]) >= 13:
+            break
         player = _recruit_to_player(recruit, program.get("conference", ""))
         program["roster"].append(player)
         recruit["status"] = "enrolled"
@@ -306,10 +309,11 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
         "C":  max(0, 2 - pos_counts.get("C",  0)),
     }
 
-    slots_to_fill = target - current_size
+    slots_to_fill = min(target, 13) - current_size
+    slots_to_fill = max(0, slots_to_fill)  # never negative
 
     for _ in range(slots_to_fill):
-        if len(program["roster"]) >= target:
+        if len(program["roster"]) >= min(target, 13):
             break
 
         current_size = len(program["roster"])
