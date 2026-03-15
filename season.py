@@ -1297,7 +1297,7 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    for year in range(2024, 2025):
+    for year in range(2024, 2029):
         all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
