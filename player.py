@@ -621,6 +621,118 @@ def generate_potential():
 
 
 # -----------------------------------------
+# FREAK PROFILE SYSTEM
+#
+# ~10% of all players get a cross-positional attribute cluster boost.
+# The profile is internal only -- never shown to the human player.
+# The player's numbers tell the story without a label.
+#
+# Physical plausibility rules:
+#   - No short guard gets shot_blocking boost
+#   - No slow big gets speed boost into guard range
+#   - Boosts land in 520-720 range depending on talent level
+#     (enough to be meaningful, not enough to break position identity)
+#
+# Each profile defines which attributes get boosted together
+# so the result is a coherent player type, not a random anomaly.
+# -----------------------------------------
+
+FREAK_PROFILES = {
+    "PG": [
+        # Marcus Smart / Jrue Holiday -- defensive anchor guard
+        ("defensive_anchor",   ["rebounding", "strength", "help_defense",
+                                 "lateral_quickness", "on_ball_defense"]),
+        # The scrappy rebounder -- times his jumps, crashes the glass
+        ("scrappy_rebounder",  ["rebounding", "strength", "vertical"]),
+        # Secondary playmaker -- reads the floor, finds cutters
+        ("secondary_playmaker",["passing", "court_vision", "decision_making"]),
+    ],
+    "SG": [
+        # The glass guard -- rebounds like a forward
+        ("glass_guard",        ["rebounding", "strength", "vertical"]),
+        # Defensive anchor -- switchable, guards 1-4
+        ("defensive_anchor",   ["on_ball_defense", "help_defense", "lateral_quickness",
+                                 "rebounding", "strength"]),
+        # Playmaking two -- initiates offense, high vision
+        ("playmaking_two",     ["passing", "court_vision", "ball_handling"]),
+    ],
+    "SF": [
+        # Point forward -- handles, initiates, finds teammates
+        ("point_forward",      ["ball_handling", "passing", "court_vision",
+                                 "decision_making"]),
+        # Big wing -- post scoring, overpowers smaller defenders
+        ("big_wing",           ["post_scoring", "strength", "finishing"]),
+        # Defensive stopper -- long, blocks shots, guards multiple positions
+        ("defensive_stopper",  ["shot_blocking", "on_ball_defense", "lateral_quickness",
+                                 "help_defense"]),
+    ],
+    "PF": [
+        # Stretch initiator -- handles, shoots, runs the offense from the elbow
+        ("stretch_initiator",  ["ball_handling", "passing", "catch_and_shoot",
+                                 "three_point"]),
+        # Switchable modern big -- guards guards on the perimeter
+        ("switchable_modern",  ["lateral_quickness", "speed", "on_ball_defense"]),
+        # Passing big -- finds cutters, runs two-man game
+        ("passing_big",        ["passing", "court_vision", "decision_making"]),
+    ],
+    "C": [
+        # The Jokic -- passes like a guard, runs the offense
+        ("passing_big",        ["passing", "court_vision", "ball_handling",
+                                 "decision_making"]),
+        # Mobile center -- moves his feet, guards on the perimeter some
+        ("mobile_center",      ["lateral_quickness", "speed", "on_ball_defense"]),
+        # Face-up four -- shoots from the elbow, faces the basket
+        ("face_up_four",       ["mid_range", "catch_and_shoot", "ball_handling"]),
+    ],
+}
+
+# Probability any individual player gets a freak profile
+FREAK_PROFILE_CHANCE = 0.10   # 10% of all generated players
+
+
+def apply_freak_profile(player, true_talent=50):
+    """
+    Rolls for a cross-positional freak profile on a single player.
+    If the roll hits, boosts 2-5 attributes from a different position's
+    primary pool into a meaningful range for this player's talent level.
+
+    true_talent  -- 1-100, used to scale how high the boost lands.
+                    A fringe player's freak attribute lands at 520-600.
+                    An elite player's freak attribute lands at 620-720.
+
+    Modifies player dict in place. Returns player.
+    """
+    if random.random() > FREAK_PROFILE_CHANCE:
+        return player
+
+    position = player.get("position", "SF")
+    profiles  = FREAK_PROFILES.get(position, [])
+    if not profiles:
+        return player
+
+    profile_name, boost_attrs = random.choice(profiles)
+
+    # Scale boost range to talent level
+    # Fringe (talent ~20): boost lands 500-580
+    # Mid (talent ~55):    boost lands 540-640
+    # Elite (talent ~90):  boost lands 600-720
+    talent_factor = (true_talent - 1) / 99.0
+    boost_min = int(480 + talent_factor * 120)   # 480-600
+    boost_max = int(560 + talent_factor * 160)   # 560-720
+
+    for attr in boost_attrs:
+        if attr in player:
+            current    = player[attr]
+            boosted    = random.randint(boost_min, boost_max)
+            # Only boost if it's actually an improvement -- don't drag down
+            # a player who already exceeds this range on that attribute
+            if boosted > current:
+                player[attr] = boosted
+
+    return player
+
+
+# -----------------------------------------
 # TEAM GENERATOR
 # Builds a full roster for a new program.
 #
@@ -710,6 +822,14 @@ def generate_team(name, prestige=50, conference=""):
                 player[attr] = max(1, min(950, player[attr] + noisy_bonus))
 
         roster.append(player)
+
+    # --- FREAK PROFILE ROLL ---
+    # Each player already on the roster gets an independent roll.
+    # apply_freak_profile() handles the probability internally.
+    # true_talent approximated from prestige for roster players.
+    approx_talent = max(10, min(90, int(prestige * 0.9)))
+    for player in roster:
+        apply_freak_profile(player, true_talent=approx_talent)
 
     # --- OUTLIER ROLL ---
     # One chance per roster to produce an above-tier player
@@ -962,3 +1082,51 @@ if __name__ == "__main__":
     print("  Total players: " + str(total_p))
     print("  Breakthroughs: " + str(total_bt))
     print("  Rate:          " + str(round(total_bt / total_p * 100, 2)) + "%")
+
+    # --- FREAK PROFILE VERIFICATION ---
+    # Generate 500 rosters and find players whose cross-positional
+    # attributes are meaningfully above their position baseline.
+    # Shows examples of what the freak system actually produces.
+    print("")
+    print("=== Freak profile verification -- 100 rosters, notable examples ===")
+    print("  Looking for players with cross-positional attributes above 580...")
+    print("")
+
+    freak_examples = []
+    for _ in range(100):
+        team = generate_team("Test", prestige=55)
+        for p in team["roster"]:
+            pos  = p["position"]
+            arch = POSITION_ARCHETYPES.get(pos, {})
+            floor_attrs = arch.get("floor", [])
+            # Find any floor attribute that's unusually high
+            for attr in floor_attrs:
+                val = p.get(attr, 0)
+                if val >= 560:
+                    freak_examples.append({
+                        "pos":  pos,
+                        "attr": attr,
+                        "val":  val,
+                        "name": p.get("name", "?"),
+                    })
+
+    # Show top 12 most interesting examples
+    freak_examples.sort(key=lambda x: x["val"], reverse=True)
+    shown = 0
+    for ex in freak_examples[:12]:
+        print("  {:<5} {:<22} floor attr: {:<20} value: {} ({})".format(
+            ex["pos"],
+            ex["name"][:21],
+            ex["attr"],
+            ex["val"],
+            display_attr(ex["val"], "letter"),
+        ))
+        shown += 1
+
+    if not freak_examples:
+        print("  No notable cross-positional attributes found -- try more rosters.")
+    else:
+        print("")
+        print("  Total cross-positional outliers found: " + str(len(freak_examples)) +
+              " across 100 rosters (~" +
+              str(round(len(freak_examples) / (100 * 13) * 100, 1)) + "% of players)")

@@ -1,36 +1,63 @@
 import random
 from names import generate_player_name
-from player import rand_attr
+from player import rand_attr, _rand_mental, apply_freak_profile
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Recruiting System v0.3
+# COLLEGE HOOPS SIM -- Recruiting System v0.4
 # System 3 of the Design Bible
 #
-# v0.3 CHANGES:
-#   - Recruit pool expanded from 1000 to 1500.
-#     Extra 500 come entirely from fringe and low tiers.
-#     328 programs × ~3 graduates/year = ~984 players needed.
-#     1500 in the pool gives the commitment system enough supply
-#     to fill rosters even with a 50% sign rate.
+# v0.4 CHANGES -- 1-1000 internal attribute scale.
 #
-# v0.2 CHANGES:
-#   - Every recruit gets one SPIKE ATTRIBUTE -- one genuine strength
-#     that makes them recruitable regardless of overall talent level.
+#   _generate_attributes() now produces skill attributes on 1-1000.
+#   Mental attributes (basketball_iq, work_ethic, coachability, etc.)
+#   stay on 1-20 -- same reasoning as player.py and coach.py.
+#   Personality attributes (ego, loyalty, maturity, social_influence)
+#   stay on 1-20.
+#
+#   ATTRIBUTE RANGE ANCHORS by tier:
+#     Elite (true_talent 88-100):
+#       primary attrs ~820-900, floor attrs ~200-320
+#     High (73-87):
+#       primary attrs ~720-820, floor attrs ~180-280
+#     Mid (52-72):
+#       primary attrs ~600-720, floor attrs ~160-260
+#     Low (33-51):
+#       primary attrs ~500-620, floor attrs ~150-230
+#     Fringe (10-32):
+#       primary attrs ~550-650 spike, base ~420-540
+#       (fringe players got in on their spike -- see below)
+#
+#   SPIKE SYSTEM:
+#     Every recruit has one genuine strength that made D1 coaches
+#     notice him. Spike values on 1-1000:
+#       Fringe (true_talent < 35):  spike 700-820
+#       Low (true_talent < 55):     spike 680-800
+#       Mid+ (true_talent >= 55):   spike 720-870
+#
+#   FORMULA:
+#     talent_factor = (true_talent - 1) / 99.0  --> 0.0 to 1.0
+#     primary:   base = 400 + int(talent_factor * 500)  --> 400-900
+#     secondary: base = 300 + int(talent_factor * 420)  --> 300-720
+#     tertiary:  base = 200 + int(talent_factor * 330)  --> 200-530
+#     floor:     base = 100 + int(talent_factor * 180)  --> 100-280
+#     spread stays proportional: ~60-80 on 1-1000 (was 2-3 on 1-20)
+#
+# v0.3 CHANGES (preserved):
+#   - Pool expanded to 1500 prospects.
+#   - Every recruit gets one SPIKE ATTRIBUTE.
 # -----------------------------------------
 
 
 POSITIONS = ["PG", "SG", "SF", "PF", "C"]
 
 # Recruit pool -- 1500 total
-# Extra 500 added to fringe and low tiers only.
-# Elite/high/mid counts unchanged -- the talent pyramid stays realistic.
 TALENT_TIERS = [
     # (tier_name, true_talent_range, count, star_likely)
     ("elite",      (88, 100),   25,   5),
     ("high",       (73,  87),   80,   4),
     ("mid",        (52,  72),  200,   3),
-    ("low",        (33,  51),  545,   2),   # was 350, +195
-    ("fringe",     (10,  32),  650,   1),   # was 345, +305
+    ("low",        (33,  51),  545,   2),
+    ("fringe",     (10,  32),  650,   1),
 ]
 
 # Position distribution targets per class
@@ -263,7 +290,18 @@ def _consensus_stars(service_ratings):
 
 def _generate_attributes(position, true_talent):
     """
-    Generates attributes with one spike -- a genuine strength.
+    Generates skill attributes on 1-1000 scale with one spike.
+
+    talent_factor maps true_talent (1-100) to 0.0-1.0.
+
+    Base ranges by tier:
+      primary:   400 + talent_factor * 500  --> ~400 (fringe) to ~900 (elite)
+      secondary: 300 + talent_factor * 420  --> ~300 to ~720
+      tertiary:  200 + talent_factor * 330  --> ~200 to ~530
+      floor:     100 + talent_factor * 180  --> ~100 to ~280
+
+    Spread ~65 (gaussian), reflecting natural variation within a tier.
+
     Returns (attributes_dict, spike_label).
     """
     talent_factor = (true_talent - 1) / 99.0
@@ -272,51 +310,76 @@ def _generate_attributes(position, true_talent):
 
     for attr in ALL_ATTRIBUTES:
         if attr in archetype["primary"]:
-            base = 10 + int(talent_factor * 8)
-            val  = rand_attr(base, spread=2)
+            base = int(400 + talent_factor * 500)
+            val  = rand_attr(base, spread=65)
         elif attr in archetype["secondary"]:
-            base = 8 + int(talent_factor * 8)
-            val  = rand_attr(base, spread=3)
+            base = int(300 + talent_factor * 420)
+            val  = rand_attr(base, spread=65)
         elif attr in archetype["tertiary"]:
-            base = 7 + int(talent_factor * 7)
-            val  = rand_attr(base, spread=3)
-        else:
-            base = 4 + int(talent_factor * 3)
-            val  = rand_attr(base, spread=2)
-        attributes[attr] = max(1, min(20, val))
+            base = int(200 + talent_factor * 330)
+            val  = rand_attr(base, spread=65)
+        else:  # floor attributes
+            base = int(100 + talent_factor * 180)
+            val  = rand_attr(base, spread=55)
+        attributes[attr] = max(1, min(950, val))
 
-    mental_base = 8 + int(talent_factor * 3)
-    attributes["basketball_iq"] = rand_attr(mental_base, spread=3)
-    attributes["clutch"]        = rand_attr(10, spread=3)
-    attributes["composure"]     = rand_attr(10, spread=3)
-    attributes["coachability"]  = rand_attr(10, spread=3)
-    attributes["work_ethic"]    = rand_attr(10, spread=3)
-    attributes["leadership"]    = rand_attr(10, spread=3)
+    # Mental attributes stay on 1-20 scale
+    mental_base = 8 + int(talent_factor * 3)   # 8-11 range, same as before
+    attributes["basketball_iq"] = _rand_mental(mental_base, spread=3)
+    attributes["clutch"]        = _rand_mental(10, spread=3)
+    attributes["composure"]     = _rand_mental(10, spread=3)
+    attributes["coachability"]  = _rand_mental(10, spread=3)
+    attributes["work_ethic"]    = _rand_mental(10, spread=3)
+    attributes["leadership"]    = _rand_mental(10, spread=3)
 
-    # Spike attribute
+    # --- SPIKE ATTRIBUTE ---
+    # One genuine strength that made D1 coaches notice this player.
+    # All recruits get one -- the fringe player's spike IS why he's here.
     specializations = SPIKE_SPECIALIZATIONS.get(position, [])
     spike_label     = "none"
 
     if specializations:
         spike_label, spike_attrs = random.choice(specializations)
 
+        # Spike values on 1-1000 scale
         if true_talent < 35:
-            spike_min, spike_max = 14, 17
+            spike_min, spike_max = 700, 820
         elif true_talent < 55:
-            spike_min, spike_max = 13, 16
+            spike_min, spike_max = 680, 800
         else:
-            spike_min, spike_max = 14, 18
+            spike_min, spike_max = 720, 870
 
         for attr in spike_attrs:
-            if attr in attributes:
+            # Only spike skill attributes, not mental ones
+            if attr in attributes and attr not in [
+                "basketball_iq", "clutch", "composure",
+                "coachability", "work_ethic", "leadership"
+            ]:
                 current = attributes[attr]
                 spiked  = random.randint(spike_min, spike_max)
                 attributes[attr] = max(current, spiked)
+
+    # --- FREAK PROFILE ROLL ---
+    # ~10% of recruits get a cross-positional attribute cluster boost.
+    # Physically plausible by position -- see FREAK_PROFILES in player.py.
+    # The profile is internal only. The numbers tell the story.
+    temp_player = {"position": position}
+    temp_player.update(attributes)
+    apply_freak_profile(temp_player, true_talent=true_talent)
+    # Pull boosted values back into attributes dict
+    for attr in ALL_ATTRIBUTES:
+        if attr in temp_player:
+            attributes[attr] = temp_player[attr]
 
     return attributes, spike_label
 
 
 def _generate_potential(true_talent):
+    """
+    Potential floor and ceiling stay as 1-100 talent scores.
+    They are scouting abstractions, not attribute values.
+    _potential_to_attr_ceiling() in player.py converts to 1-1000 when needed.
+    """
     talent_factor = (true_talent - 1) / 99.0
     floor_base = 30 + int(talent_factor * 45)
     floor = max(10, min(85, floor_base + random.randint(-10, 10)))
@@ -326,17 +389,15 @@ def _generate_potential(true_talent):
 
 
 def _generate_personality(true_talent):
+    """Personality attributes stay on 1-20 scale."""
     talent_factor = (true_talent - 1) / 99.0
     ego_base = 8 + int(talent_factor * 5)
-    ego = rand_attr(ego_base, spread=3)
-    loyalty          = rand_attr(10, spread=3)
-    maturity         = rand_attr(10, spread=3)
-    social_influence = rand_attr(10, spread=3)
+    ego = _rand_mental(ego_base, spread=3)
     return {
         "ego":              max(1, min(20, ego)),
-        "loyalty":          max(1, min(20, loyalty)),
-        "maturity":         max(1, min(20, maturity)),
-        "social_influence": max(1, min(20, social_influence)),
+        "loyalty":          _rand_mental(10, spread=3),
+        "maturity":         _rand_mental(10, spread=3),
+        "social_influence": _rand_mental(10, spread=3),
     }
 
 
@@ -363,7 +424,7 @@ def _generate_priorities(player_weights=None):
 def generate_recruiting_class(season):
     """
     Generates the full D1 recruiting prospect pool for a given season.
-    v0.3: 1500 prospects (was 1000). Extra 500 in fringe/low tiers.
+    1500 prospects. All skill attributes on 1-1000 scale.
     """
     recruits = []
 
@@ -421,6 +482,7 @@ def stars_display(n):
 
 
 def print_recruit(recruit, show_hidden=False):
+    from display import display_attr
     print("")
     print("  " + recruit["name"] + "  |  " + recruit["position"] +
           "  |  " + format_height(recruit["height_inches"]) +
@@ -437,6 +499,14 @@ def print_recruit(recruit, show_hidden=False):
               "  Potential: " + str(recruit["potential_floor"]) +
               "-" + str(recruit["potential_ceiling"]) +
               "  Spike: " + recruit.get("spike_label", "none"))
+        # Show a sample attribute in both raw and letter grade
+        primary_sample = {
+            "PG": "ball_handling", "SG": "catch_and_shoot",
+            "SF": "finishing", "PF": "rebounding", "C": "rebounding"
+        }.get(recruit["position"], "finishing")
+        raw_val = recruit.get(primary_sample, 0)
+        print("  [HIDDEN] " + primary_sample + ": " + str(raw_val) +
+              " (" + display_attr(raw_val, "letter") + ")")
         print("  [HIDDEN] Ego: " + str(recruit["ego"]) +
               "  Loyalty: " + str(recruit["loyalty"]) +
               "  Maturity: " + str(recruit["maturity"]))
@@ -449,6 +519,7 @@ def print_recruit(recruit, show_hidden=False):
 
 
 def print_class_summary(recruits, season, show_hidden=False):
+    from display import display_attr
     print("")
     print("=" * 65)
     print("  " + str(season) + " RECRUITING CLASS  --  " +
@@ -495,10 +566,17 @@ def print_class_summary(recruits, season, show_hidden=False):
             stars_display(r["stars_consensus"]),
         ))
         if show_hidden:
+            primary_sample = {
+                "PG": "ball_handling", "SG": "catch_and_shoot",
+                "SF": "finishing", "PF": "rebounding", "C": "rebounding"
+            }.get(r["position"], "finishing")
+            raw_val = r.get(primary_sample, 0)
             print("       [true_talent: " + str(r["true_talent"]) +
                   "  potential: " + str(r["potential_floor"]) +
                   "-" + str(r["potential_ceiling"]) +
-                  "  spike: " + r.get("spike_label", "none") + "]")
+                  "  spike: " + r.get("spike_label", "none") +
+                  "  " + primary_sample + ": " + str(raw_val) +
+                  " (" + display_attr(raw_val, "letter") + ")]")
 
 
 # -----------------------------------------
@@ -507,21 +585,56 @@ def print_class_summary(recruits, season, show_hidden=False):
 
 if __name__ == "__main__":
 
-    print("Generating 2025 recruiting class (v0.3 -- 1500 prospects)...")
+    print("Generating 2025 recruiting class (v0.4 -- 1-1000 scale)...")
     recruits_2025 = generate_recruiting_class(season=2025)
 
     print_class_summary(recruits_2025, season=2025, show_hidden=True)
 
     print("")
     print("=" * 65)
-    print("  POOL SIZE VERIFICATION")
+    print("  ATTRIBUTE RANGE VERIFICATION by tier")
+    print("  (primary attribute averages on 1-1000 scale)")
     print("=" * 65)
-    total = len(recruits_2025)
-    by_stars = {s: sum(1 for r in recruits_2025 if r["stars_consensus"] == s)
-                for s in [5, 4, 3, 2, 1]}
-    print("  Total recruits: " + str(total) + "  (target: 1500)")
-    for s in [5, 4, 3, 2, 1]:
-        print("    " + str(s) + "-star: " + str(by_stars[s]))
+
+    from display import display_attr
+
+    tier_buckets = {"elite": [], "high": [], "mid": [], "low": [], "fringe": []}
+    for r in recruits_2025:
+        tt = r["true_talent"]
+        pos = r["position"]
+        primary_attrs = POSITION_ARCHETYPES[pos]["primary"]
+        avg_primary = sum(r.get(a, 500) for a in primary_attrs if a in r) / max(1, len(primary_attrs))
+
+        if tt >= 88:   tier_buckets["elite"].append(avg_primary)
+        elif tt >= 73: tier_buckets["high"].append(avg_primary)
+        elif tt >= 52: tier_buckets["mid"].append(avg_primary)
+        elif tt >= 33: tier_buckets["low"].append(avg_primary)
+        else:          tier_buckets["fringe"].append(avg_primary)
+
+    for tier, vals in tier_buckets.items():
+        if vals:
+            avg = sum(vals) / len(vals)
+            mn  = min(vals)
+            mx  = max(vals)
+            print("  " + tier.ljust(8) +
+                  "  avg primary: " + str(round(avg)).rjust(4) +
+                  "  (" + display_attr(avg, "letter") + ")" +
+                  "  range: " + str(round(mn)) + "-" + str(round(mx)))
+
     print("")
-    print("  328 programs × 3 graduates avg = ~984 players needed per year")
-    print("  At 65% sign rate: " + str(int(total * 0.65)) + " commits -- should cover demand")
+    print("=" * 65)
+    print("  SPIKE VERIFICATION -- top spike values")
+    print("=" * 65)
+    fringe = [r for r in recruits_2025 if r["true_talent"] < 35]
+    all_spike_vals = []
+    for r in fringe[:50]:
+        pos = r["position"]
+        primary = POSITION_ARCHETYPES[pos]["primary"]
+        top_attr = max(primary, key=lambda a: r.get(a, 0))
+        top_val  = r.get(top_attr, 0)
+        all_spike_vals.append(top_val)
+
+    avg_spike = sum(all_spike_vals) / max(1, len(all_spike_vals))
+    print("  Fringe recruits top attribute avg: " + str(round(avg_spike)) +
+          " (" + display_attr(avg_spike, "letter") + ")")
+    print("  Target: 700-820 range")
