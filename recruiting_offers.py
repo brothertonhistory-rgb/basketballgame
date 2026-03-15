@@ -17,23 +17,24 @@ import random
 
 # How many offers per needed position per prestige tier
 # Elite programs cast wider nets -- more offers per position need
+# Low/bottom programs cast wide nets too -- they need to fill rosters
 OFFERS_PER_NEED = {
     "elite":   15,   # 80+ prestige
     "good":    11,   # 60-79
-    "average":  8,   # 40-59
-    "low":      6,   # 20-39
-    "bottom":   4,   # under 20
+    "average":  9,   # 40-59
+    "low":     10,   # 20-39  -- raised: need to find players willing to come
+    "bottom":  10,   # under 20 -- raised: cast wide net to survive
 }
 
 # How far outside their star range programs will reach
-# Elite programs occasionally offer 3-stars (reach down)
-# Low programs occasionally offer 4-stars (reach up, hoping)
+# Low/bottom programs can now offer 3-stars -- those recruits often go
+# unsigned anyway, and desperate programs will take a shot
 STAR_RANGE = {
     "elite":   (3, 5),   # mostly 4-5 star, will dip to 3
     "good":    (3, 5),   # mix of 3-4 star, occasional 5
     "average": (2, 4),   # mostly 2-3 star, occasional 4
-    "low":     (2, 3),   # mostly 2-star
-    "bottom":  (1, 2),   # 1-2 star only
+    "low":     (1, 3),   # 1-3 star -- widened to reach unsigned 3-stars
+    "bottom":  (1, 3),   # 1-3 star -- widened so rosters dont go empty
 }
 
 # Target roster size -- how many players a program wants total

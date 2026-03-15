@@ -17,7 +17,7 @@ import random
 
 # How high interest must be to commit in each phase (1-100 scale)
 EARLY_SIGNING_THRESHOLD  = 58    # Moderate bar for early signing
-LATE_SIGNING_THRESHOLD   = 40    # Lower bar -- recruit runs out of options
+LATE_SIGNING_THRESHOLD   = 28    # Lowered -- more recruits find a home late
 
 # Loyalty threshold for early committers
 # Recruits with loyalty >= this will commit early if interest is high enough
@@ -32,15 +32,16 @@ INSEASON_INTEREST_DROP  = 1     # Passive decay if no contact
 UPSET_FACTOR = 0.08
 
 # Indecision rate -- fraction of recruits who delay even when threshold met
-INDECISION_RATE = 0.15
+INDECISION_RATE = 0.08   # Lowered -- fewer recruits stall out unsigned
 
 # Max players a program can sign per cycle -- prevents hoarding
+# Raised across the board so rosters stay healthy after graduation
 MAX_CLASS_SIZE = {
-    "elite":   5,    # 80+ prestige
-    "good":    5,    # 60-79
-    "average": 4,    # 40-59
-    "low":     4,    # 20-39
-    "bottom":  3,    # under 20
+    "elite":   6,    # 80+ prestige
+    "good":    6,    # 60-79
+    "average": 5,    # 40-59
+    "low":     5,    # 20-39
+    "bottom":  4,    # under 20
 }
 
 

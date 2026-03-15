@@ -20,13 +20,14 @@ POSITIONS = ["PG", "SG", "SF", "PF", "C"]
 
 # How many D1-relevant recruits to generate per class
 # Power law distribution -- very few elite, many average
+# Total: ~1000 prospects -- enough to fill all 328 rosters after graduation
 TALENT_TIERS = [
     # (tier_name, true_talent_range, count, star_likely)
-    ("elite",      (88, 100), 25,   5),
-    ("high",       (73,  87), 80,   4),
-    ("mid",        (52,  72), 200,  3),
-    ("low",        (33,  51), 250,  2),
-    ("fringe",     (10,  32), 200,  1),
+    ("elite",      (88, 100),  25,   5),
+    ("high",       (73,  87),  80,   4),
+    ("mid",        (52,  72), 200,   3),
+    ("low",        (33,  51), 350,   2),
+    ("fringe",     (10,  32), 345,   1),
 ]
 
 # Position distribution targets per class -- mirrors real D1 recruiting
