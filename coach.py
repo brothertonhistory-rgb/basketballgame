@@ -1,116 +1,56 @@
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Coaching Philosophy v0.3
+# COLLEGE HOOPS SIM -- Coaching Philosophy v0.4
 #
-# A coach has five layers:
+# v0.4 CHANGES -- roster_fill_aggressiveness:
 #
-#   1. IDENTITY
-#      name, archetype, experience, legacy
+#   NEW internal attribute added to every coach.
+#   Represents how willing a coach is to sign a marginal player
+#   to fill a scholarship vs leaving it open.
 #
-#   2. PHILOSOPHY SLIDERS (1-100 each)
-#      Where on each spectrum this coach lives.
-#      These never change much -- they are who he is.
+#   DERIVED from existing attributes -- not a new random number:
+#     rotation_size     -- coach who plays 9-10 wants deeper roster
+#     player_development -- developer takes raw projects others won't
+#     slot_strictness   -- low strictness (just give me athletes) = aggressive
+#                          high strictness (specific roles) = selective
 #
-#      OFFENSIVE:
-#        pace            1=grind              100=40 min of hell
-#        shot_profile    1=exploit mid-range  100=rim and 3 only
-#        ball_movement   1=ISO heavy          100=ball movement
-#        shot_selection  1=first decent look  100=work for best shot
-#        personnel       1=traditional 5 pos  100=positionless
-#        off_rebounding  1=get back on D      100=crash every miss
+#   Formula:
+#     rotation_component    = (rotation_size - 6) / 5       [0.0-1.0]
+#     development_component = (player_development - 1) / 19 [0.0-1.0]
+#     strictness_component  = (10 - slot_strictness) / 9    [0.0-1.0, inverted]
+#     raw = rotation*0.45 + development*0.30 + strictness*0.25
+#     roster_fill_aggressiveness = clamp(1-10, round(raw*10) + noise)
 #
-#      DEFENSIVE:
-#        pressure        1=set defense        100=full court pressure
-#        philosophy      1=contain/pack line  100=gamble/trap/steals
-#        def_rebounding  1=leak out           100=crash defensive glass
-#        screen_defense  1=switch everything  100=fight through screens
-#        zone_tendency   1=pure man           100=zone heavy
+#   NEVER shown to human player. Internal simulation driver only.
 #
-#      LATE GAME:
-#        late_game       1=draw set play      100=star iso
+#   Used by lifecycle.py post-enrollment roster floor check:
+#     7-10: takes anyone to fill to 13, very aggressive
+#     4-6:  signs players meeting modest talent bar, targets 12
+#     1-3:  selective, comfortable leaving spots open, floor at 11
 #
-#   3. COMPETENCE RATINGS (1-20 each)
-#      How GOOD he is at what he does.
-#      Two coaches can run the same system -- one runs it well,
-#      one runs it into the ground.
-#
-#        offensive_skill       -- executes his offensive system
-#        defensive_skill       -- executes his defensive system
-#        player_development    -- players improve under him
-#        tactics               -- game prep, situational execution,
-#                                 set plays, adjustments
-#        in_game_adaptability  -- adjusts when things aren't working
-#                                 mid-game. Low = sticks to gameplan
-#                                 regardless. High = reads and reacts.
-#        scheme_adaptability   -- reshapes system for his personnel
-#                                 over seasons. Low = forces players
-#                                 into his system. High = builds around
-#                                 what walked in the door.
-#        recruiting_attraction -- pulling power. Gets in the door with
-#                                 elite recruits. Sells the vision.
-#        roster_fit            -- identifies which recruit fills which
-#                                 role. Not finding gems, finding the
-#                                 right piece for the right slot.
-#
-#   4. ROSTER CONSTRUCTION
-#      How he thinks about building a complete roster.
-#
-#        rotation_size         -- how many players he trusts (6-11)
-#                                 influenced by pace, with variance
-#        slot_strictness       -- how specific he is about depth roles
-#                                 1=just give me athletes
-#                                 10=my 12th man MUST be an energy big
-#        talent_vs_fit         -- already in values_role_players
-#
-#   5. ROSTER VALUES (1-10 each)
-#      What he looks for when evaluating recruits.
-#      Derived from his sliders with noise.
-#
-#        values_athleticism, values_iq, values_size,
-#        values_shooting, values_defense, values_toughness,
-#        values_role_players
-#
-# v0.4 CHANGES:
-#   - calculate_style_fit() updated to normalize player skill attributes
-#     against 1000 instead of 20. All style fit scores (0-100) are
-#     equivalent to v0.3 at the mean. Only the denominator changed.
-#   - _scale_attr() helper added for 1-1000 player attribute scaling.
-#   - Coach competence ratings STAY 1-20. Intentional.
-#
-# v0.3 CHANGES:
-#   - _generate_competence() bonus now capped at 3 (was uncapped, causing
-#     multiple coaches to max out at 20/20 at elite programs)
+# v0.3 CHANGES (preserved):
+#   _generate_competence() bonus capped at 3.
+# v0.4 note on scale: All skill attributes on 1-1000. Coach competence stays 1-20.
 # -----------------------------------------
 
 import random
 
-# -----------------------------------------
-# ARCHETYPE TEMPLATES
-# Internal only -- never shown to human player.
-# Each generated coach gets gaussian noise applied
-# so no two coaches are identical.
-# -----------------------------------------
-
 COACH_ARCHETYPES = {
 
     "grinder": {
-        # Izzo, Mick Cronin, Tony Bennett
         "pace": 20, "shot_profile": 35, "ball_movement": 40,
         "shot_selection": 75, "personnel": 30, "off_rebounding": 70,
         "pressure": 30, "philosophy": 25, "def_rebounding": 80,
         "screen_defense": 70, "zone_tendency": 20, "late_game": 35,
-        # Competence tendencies
         "offensive_skill": 13, "defensive_skill": 16,
         "player_development": 14, "tactics": 15,
         "in_game_adaptability": 9, "scheme_adaptability": 7,
         "recruiting_attraction": 12, "roster_fit": 15,
-        # Roster construction
-        "rotation_size_bias": -1,   # tends to play fewer
-        "slot_strictness_bias": 3,  # pretty specific about roles
-        "rotation_flexibility_bias": 2,  # fairly rigid rotation
+        "rotation_size_bias": -1,
+        "slot_strictness_bias": 3,
+        "rotation_flexibility_bias": 2,
     },
 
     "pace_and_space": {
-        # Calipari, Nate Oats, Fred Hoiberg
         "pace": 85, "shot_profile": 80, "ball_movement": 55,
         "shot_selection": 35, "personnel": 80, "off_rebounding": 35,
         "pressure": 55, "philosophy": 60, "def_rebounding": 40,
@@ -119,13 +59,12 @@ COACH_ARCHETYPES = {
         "player_development": 13, "tactics": 13,
         "in_game_adaptability": 12, "scheme_adaptability": 11,
         "recruiting_attraction": 17, "roster_fit": 10,
-        "rotation_size_bias": 2,    # tends to go deeper
-        "slot_strictness_bias": -2, # talent over role
-        "rotation_flexibility_bias": 7,  # rides hot hands
+        "rotation_size_bias": 2,
+        "slot_strictness_bias": -2,
+        "rotation_flexibility_bias": 7,
     },
 
     "princeton_style": {
-        # Pete Carril disciples, patient, high IQ
         "pace": 15, "shot_profile": 30, "ball_movement": 85,
         "shot_selection": 90, "personnel": 45, "off_rebounding": 40,
         "pressure": 20, "philosophy": 20, "def_rebounding": 55,
@@ -134,13 +73,12 @@ COACH_ARCHETYPES = {
         "player_development": 16, "tactics": 17,
         "in_game_adaptability": 11, "scheme_adaptability": 8,
         "recruiting_attraction": 10, "roster_fit": 17,
-        "rotation_size_bias": -2,   # plays tight rotation
-        "slot_strictness_bias": 4,  # very specific roles
-        "rotation_flexibility_bias": 2,  # rigid, system is everything
+        "rotation_size_bias": -2,
+        "slot_strictness_bias": 4,
+        "rotation_flexibility_bias": 2,
     },
 
     "motion_offense": {
-        # Dean Smith tradition, ball movement, team first
         "pace": 55, "shot_profile": 45, "ball_movement": 80,
         "shot_selection": 70, "personnel": 50, "off_rebounding": 50,
         "pressure": 40, "philosophy": 35, "def_rebounding": 60,
@@ -151,11 +89,10 @@ COACH_ARCHETYPES = {
         "recruiting_attraction": 13, "roster_fit": 14,
         "rotation_size_bias": 0,
         "slot_strictness_bias": 1,
-        "rotation_flexibility_bias": 5,  # balanced
+        "rotation_flexibility_bias": 5,
     },
 
     "dribble_drive": {
-        # Calipari Memphis era, attack the paint
         "pace": 75, "shot_profile": 70, "ball_movement": 35,
         "shot_selection": 30, "personnel": 70, "off_rebounding": 45,
         "pressure": 60, "philosophy": 55, "def_rebounding": 45,
@@ -166,11 +103,10 @@ COACH_ARCHETYPES = {
         "recruiting_attraction": 14, "roster_fit": 11,
         "rotation_size_bias": 1,
         "slot_strictness_bias": -1,
-        "rotation_flexibility_bias": 7,  # rides hot hands, star driven
+        "rotation_flexibility_bias": 7,
     },
 
     "post_centric": {
-        # Matt Painter, traditional big man offense
         "pace": 35, "shot_profile": 25, "ball_movement": 50,
         "shot_selection": 65, "personnel": 20, "off_rebounding": 65,
         "pressure": 35, "philosophy": 30, "def_rebounding": 75,
@@ -181,11 +117,10 @@ COACH_ARCHETYPES = {
         "recruiting_attraction": 12, "roster_fit": 15,
         "rotation_size_bias": -1,
         "slot_strictness_bias": 3,
-        "rotation_flexibility_bias": 3,  # fairly rigid, knows his guys
+        "rotation_flexibility_bias": 3,
     },
 
     "pressure_defense": {
-        # Rick Pitino, Billy Donovan, press and gamble
         "pace": 70, "shot_profile": 60, "ball_movement": 50,
         "shot_selection": 40, "personnel": 60, "off_rebounding": 35,
         "pressure": 90, "philosophy": 85, "def_rebounding": 40,
@@ -194,13 +129,12 @@ COACH_ARCHETYPES = {
         "player_development": 13, "tactics": 15,
         "in_game_adaptability": 14, "scheme_adaptability": 12,
         "recruiting_attraction": 15, "roster_fit": 12,
-        "rotation_size_bias": 2,    # needs depth for press
+        "rotation_size_bias": 2,
         "slot_strictness_bias": 1,
-        "rotation_flexibility_bias": 7,  # must rotate fresh legs for press
+        "rotation_flexibility_bias": 7,
     },
 
     "zone_specialist": {
-        # Jim Boeheim, 2-3 zone identity
         "pace": 40, "shot_profile": 40, "ball_movement": 55,
         "shot_selection": 60, "personnel": 35, "off_rebounding": 55,
         "pressure": 35, "philosophy": 40, "def_rebounding": 65,
@@ -211,11 +145,10 @@ COACH_ARCHETYPES = {
         "recruiting_attraction": 13, "roster_fit": 14,
         "rotation_size_bias": -1,
         "slot_strictness_bias": 2,
-        "rotation_flexibility_bias": 2,  # rigid, zone is the system
+        "rotation_flexibility_bias": 2,
     },
 
     "analytics_modern": {
-        # Modern analytics coaches, rim or 3, switch everything
         "pace": 65, "shot_profile": 90, "ball_movement": 65,
         "shot_selection": 55, "personnel": 85, "off_rebounding": 30,
         "pressure": 45, "philosophy": 50, "def_rebounding": 35,
@@ -226,11 +159,10 @@ COACH_ARCHETYPES = {
         "recruiting_attraction": 13, "roster_fit": 16,
         "rotation_size_bias": 1,
         "slot_strictness_bias": 0,
-        "rotation_flexibility_bias": 6,  # data driven, reacts to matchups
+        "rotation_flexibility_bias": 6,
     },
 
     "wildcard": {
-        # Unpredictable, hard to scout
         "pace": 50, "shot_profile": 50, "ball_movement": 50,
         "shot_selection": 50, "personnel": 50, "off_rebounding": 50,
         "pressure": 50, "philosophy": 50, "def_rebounding": 50,
@@ -258,46 +190,58 @@ ARCHETYPE_WEIGHTS = {
     "wildcard":          2,
 }
 
-SLIDER_NOISE      = 12
-COMPETENCE_NOISE  = 2
+SLIDER_NOISE     = 12
+COMPETENCE_NOISE = 2
 
-
-# -----------------------------------------
-# HELPERS
-# -----------------------------------------
 
 def _pick_archetype():
-    """Weighted random archetype selection."""
     archetypes = list(ARCHETYPE_WEIGHTS.keys())
     weights    = list(ARCHETYPE_WEIGHTS.values())
     return random.choices(archetypes, weights=weights, k=1)[0]
 
 
 def _slider(base, noise=SLIDER_NOISE):
-    """Applies gaussian noise to a base slider value. Clamps 1-100."""
     val = int(random.gauss(base, noise))
     return max(1, min(100, val))
 
 
 def _scale(val, lo, hi):
-    """Scales a value to 0.0-1.0 range."""
     if hi == lo:
         return 0.0
     return (val - lo) / (hi - lo)
 
 
 def _scale_attr(val):
-    """
-    Scales a player skill attribute (1-1000) to 0.0-1.0.
-    Used by calculate_style_fit() which reads raw player attributes.
-    Replaces the old _scale(val, 1, 20) calls.
-    """
     return _scale(val, 1, 1000)
 
 
-# -----------------------------------------
-# MAIN GENERATOR
-# -----------------------------------------
+def _derive_roster_fill_aggressiveness(rotation_size, player_development, slot_strictness):
+    """
+    Derives roster_fill_aggressiveness (1-10) from existing coach attributes.
+    Internal only -- never shown to human player.
+
+    High value (7-10): takes marginal players to fill to 13. Mid/low major grinder.
+    Medium value (4-6): signs players meeting a modest bar. Targets 12.
+    Low value (1-3):  selective. Comfortable at 11. Elite program mentality.
+
+    rotation_size     6-11  -> higher = wants more bodies
+    player_development 1-20 -> higher = willing to take projects
+    slot_strictness   1-10  -> INVERTED: lower = less picky = more aggressive
+    """
+    rotation_component    = (rotation_size - 6) / 5.0          # 0.0 - 1.0
+    development_component = (player_development - 1) / 19.0    # 0.0 - 1.0
+    strictness_component  = (10 - slot_strictness) / 9.0       # 0.0 - 1.0 (inverted)
+
+    raw = (
+        rotation_component    * 0.45 +
+        development_component * 0.30 +
+        strictness_component  * 0.25
+    )
+
+    base  = round(raw * 10)
+    noise = random.randint(-1, 1)
+    return max(1, min(10, base + noise))
+
 
 def generate_coach(name, prestige=50, archetype=None, experience=None):
     """
@@ -333,31 +277,33 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
     }
 
     # --- COMPETENCE RATINGS ---
-    # Experience adds to ceiling. Prestige programs attract more competent coaches.
     exp_bonus      = min(4, experience // 6)
     prestige_bonus = min(3, prestige // 35)
     competence     = _generate_competence(t, exp_bonus, prestige_bonus)
 
     # --- ROTATION SIZE ---
-    # Base: driven by pace. Fast pace = more players needed.
-    pace_driven   = 7 + int((philosophy["pace"] / 100) * 3)   # 7-10 range from pace
+    pace_driven   = 7 + int((philosophy["pace"] / 100) * 3)
     bias          = t["rotation_size_bias"]
-    rotation_size = max(6, min(11,
-        pace_driven + bias + random.randint(-1, 1)
-    ))
+    rotation_size = max(6, min(11, pace_driven + bias + random.randint(-1, 1)))
 
     # --- SLOT STRICTNESS ---
     slot_base       = 5 + t["slot_strictness_bias"]
     slot_strictness = max(1, min(10, slot_base + random.randint(-2, 2)))
 
     # --- ROTATION FLEXIBILITY ---
-    # 1 = rigid, plays his 8, strict minute blocks
-    # 10 = reactive, rides hot hands, goes deep when trailing
     flex_base            = t.get("rotation_flexibility_bias", 5)
     rotation_flexibility = max(1, min(10, flex_base + random.randint(-2, 2)))
 
     # --- ROSTER VALUES ---
     roster_values = _generate_roster_values(archetype, philosophy)
+
+    # --- ROSTER FILL AGGRESSIVENESS (v0.4) ---
+    # Internal only. Derived from rotation_size, player_development, slot_strictness.
+    roster_fill_aggressiveness = _derive_roster_fill_aggressiveness(
+        rotation_size,
+        competence["player_development"],
+        slot_strictness,
+    )
 
     coach = {
         # --- IDENTITY ---
@@ -391,9 +337,10 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
         "roster_fit":            competence["roster_fit"],
 
         # --- ROSTER CONSTRUCTION ---
-        "rotation_size":        rotation_size,
-        "slot_strictness":      slot_strictness,
-        "rotation_flexibility": rotation_flexibility,
+        "rotation_size":               rotation_size,
+        "slot_strictness":             slot_strictness,
+        "rotation_flexibility":        rotation_flexibility,
+        "roster_fill_aggressiveness":  roster_fill_aggressiveness,
 
         # --- ROSTER VALUES (1-10) ---
         "values_athleticism":  roster_values["athleticism"],
@@ -413,25 +360,7 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
     return coach
 
 
-# -----------------------------------------
-# COMPETENCE GENERATOR
-# -----------------------------------------
-
 def _generate_competence(template, exp_bonus, prestige_bonus):
-    """
-    Generates competence ratings 1-20.
-    Each archetype has baseline tendencies.
-    Experience and prestige raise the ceiling slightly.
-    Noise ensures no two coaches are identical.
-
-    v0.3: Total bonus capped at 3 to prevent elite-program coaches
-    from systematically maxing out multiple ratings at 20/20.
-    Archetype bases for elite archetypes are already 15-17; adding
-    a full 7-point bonus was causing most power-conference coaches
-    to hit the ceiling on their primary competencies.
-    """
-    # Cap total bonus at 3 -- prestige attracts better coaches but
-    # doesn't guarantee a roster full of maxed-out ratings
     bonus = min(3, exp_bonus + prestige_bonus)
 
     ratings = {}
@@ -449,15 +378,7 @@ def _generate_competence(template, exp_bonus, prestige_bonus):
     return ratings
 
 
-# -----------------------------------------
-# ROSTER VALUES GENERATOR
-# -----------------------------------------
-
 def _generate_roster_values(archetype, philosophy):
-    """
-    What this coach values in recruits.
-    Derived from his philosophy sliders.
-    """
     def clamp(val):
         return max(1, min(10, val + random.randint(-1, 2)))
 
@@ -486,16 +407,9 @@ def _generate_roster_values(archetype, philosophy):
     }
 
 
-# -----------------------------------------
-# STYLE FIT
-# How well a player's attributes fit this coach's system
-# Returns 0-100. Used in recruiting interest calculation.
-# -----------------------------------------
-
 def calculate_style_fit(player, coach):
     """
     Calculates how well a player fits a coach's system.
-    A player who fits gets a significant interest boost in recruiting.
     Returns a fit score 0-100.
     """
     fit_points = 0
@@ -504,42 +418,35 @@ def calculate_style_fit(player, coach):
     def contrib(player_val, weight):
         return _scale_attr(player_val) * weight
 
-    # Pace fit -- fast systems need speed
     if coach["pace"] >= 60:
         fit_points += contrib(player.get("speed", 10), coach["pace"] / 100)
         checks += 1
 
-    # Shot profile -- rim and 3 needs finishing and three point
     if coach["shot_profile"] >= 55:
         avg = (player.get("three_point", 10) + player.get("finishing", 10)) / 2
         fit_points += contrib(avg, coach["shot_profile"] / 100)
         checks += 1
 
-    # Ball movement -- motion needs passing and vision
     if coach["ball_movement"] >= 60:
         avg = (player.get("passing", 10) + player.get("court_vision", 10)) / 2
         fit_points += contrib(avg, coach["ball_movement"] / 100)
         checks += 1
 
-    # Personnel -- positionless needs versatility
     if coach["personnel"] >= 65:
         avg = (player.get("ball_handling", 10) + player.get("speed", 10)) / 2
         fit_points += contrib(avg, coach["personnel"] / 100)
         checks += 1
 
-    # Pressure defense -- needs athleticism and steals
     if coach["philosophy"] >= 65:
         avg = (player.get("steal_tendency", 10) + player.get("lateral_quickness", 10)) / 2
         fit_points += contrib(avg, coach["philosophy"] / 100)
         checks += 1
 
-    # Rebounding systems need boards and strength
     if coach["off_rebounding"] >= 65 or coach["def_rebounding"] >= 65:
         avg = (player.get("rebounding", 10) + player.get("strength", 10)) / 2
         fit_points += contrib(avg, 1.0)
         checks += 1
 
-    # Post centric -- needs post scoring and size
     if coach["shot_profile"] <= 35 and coach["personnel"] <= 35:
         avg = (player.get("post_scoring", 10) + player.get("strength", 10)) / 2
         fit_points += contrib(avg, 1.0)
@@ -552,13 +459,7 @@ def calculate_style_fit(player, coach):
     return max(0, min(100, int(raw)))
 
 
-# -----------------------------------------
-# DISPLAY
-# -----------------------------------------
-
 def print_coach_profile(coach, show_archetype=False):
-    """Prints a full readable coaching profile."""
-
     def bar(val, width=20):
         filled = int((val / 100) * width)
         return "█" * filled + "░" * (width - filled) + "  " + str(val)
@@ -574,14 +475,12 @@ def print_coach_profile(coach, show_archetype=False):
         print("  Archetype:      " + coach["archetype"])
     print("  Experience:     " + str(coach["experience"]) + " years")
     print("  Rotation size:  " + str(coach["rotation_size"]) + " players")
-    print("  Rot flexibility:" + str(coach["rotation_flexibility"]) + "/10  " +
-          ("(rides hot hand)" if coach["rotation_flexibility"] >= 7
-           else "(rigid blocks)"  if coach["rotation_flexibility"] <= 3
-           else "(balanced)"))
-    print("  Slot strictness:" + str(coach["slot_strictness"]) + "/10  " +
-          ("(builds by role)" if coach["slot_strictness"] >= 7
-           else "(stacks talent)" if coach["slot_strictness"] <= 3
-           else "(balanced)"))
+    print("  Rot flexibility:" + str(coach["rotation_flexibility"]) + "/10")
+    print("  Slot strictness:" + str(coach["slot_strictness"]) + "/10")
+    print("  Roster fill:    " + str(coach["roster_fill_aggressiveness"]) + "/10" +
+          ("  (aggressive filler)" if coach["roster_fill_aggressiveness"] >= 7
+           else "  (selective)"       if coach["roster_fill_aggressiveness"] <= 3
+           else "  (balanced)"))
 
     print("")
     print("  -- OFFENSE --")
@@ -617,7 +516,6 @@ def print_coach_profile(coach, show_archetype=False):
 
     print("")
     print("  -- ROSTER VALUES --")
-    print("  What he recruits for:")
     print("  Athleticism: " + str(coach["values_athleticism"]) +
           "  IQ: "          + str(coach["values_iq"]) +
           "  Size: "        + str(coach["values_size"]) +
@@ -627,16 +525,12 @@ def print_coach_profile(coach, show_archetype=False):
           "  Role Players: "+ str(coach["values_role_players"]))
 
 
-# -----------------------------------------
-# TEST
-# -----------------------------------------
-
 if __name__ == "__main__":
 
     from player import create_player
 
     print("=" * 65)
-    print("  COACH GENERATION TEST -- v0.3")
+    print("  COACH GENERATION TEST -- v0.4")
     print("=" * 65)
 
     coaches = [
@@ -648,19 +542,34 @@ if __name__ == "__main__":
         generate_coach("Analytics Coach",   prestige=60, archetype="analytics_modern",  experience=8),
         generate_coach("Princeton Coach",   prestige=55, archetype="princeton_style",   experience=18),
         generate_coach("Post Coach",        prestige=65, archetype="post_centric",      experience=20),
+        generate_coach("SWAC Coach",        prestige=15, archetype="grinder",           experience=5),
+        generate_coach("Mid-Major Grinder", prestige=35, archetype="motion_offense",    experience=12),
     ]
 
     for coach in coaches:
         print_coach_profile(coach, show_archetype=True)
 
-    # --- COMPETENCE CEILING VERIFICATION ---
-    # After the v0.3 fix, elite coaches should NOT routinely hit 20/20
     print("")
     print("=" * 65)
-    print("  COMPETENCE CEILING VERIFICATION -- 50 elite program coaches")
-    print("  (should see very few 20/20 ratings after v0.3 fix)")
+    print("  ROSTER FILL AGGRESSIVENESS VERIFICATION")
+    print("  Expected: SWAC/mid-major coaches = 6-9, elite = 2-5")
     print("=" * 65)
-    maxed_count = 0
+    print("  {:<25} {:<12} {:<8} {:<8} {:<8}".format(
+        "Coach", "Archetype", "Rot", "Slot", "Fill"))
+    print("  " + "-" * 61)
+    for c in coaches:
+        print("  {:<25} {:<12} {:<8} {:<8} {:<8}".format(
+            c["name"], c["archetype"],
+            str(c["rotation_size"]),
+            str(c["slot_strictness"]),
+            str(c["roster_fill_aggressiveness"]) + "/10",
+        ))
+
+    print("")
+    print("=" * 65)
+    print("  COMPETENCE CEILING VERIFICATION -- 50 elite coaches")
+    print("=" * 65)
+    maxed_count  = 0
     total_ratings = 0
     for i in range(50):
         c = generate_coach("Coach " + str(i+1), prestige=90, experience=25)
@@ -670,58 +579,4 @@ if __name__ == "__main__":
                 maxed_count += 1
     print("  Ratings at 20/20: " + str(maxed_count) + " of " + str(total_ratings) +
           " (" + str(round(maxed_count / total_ratings * 100, 1)) + "%)")
-    print("  (healthy range: under 5%)")
-
-    # --- ROTATION SIZE vs PACE ---
-    print("")
-    print("=" * 65)
-    print("  ROTATION SIZE vs PACE VERIFICATION")
-    print("=" * 65)
-    print("  {:<22} {:<8} {:<10}".format("Coach", "Pace", "Rotation"))
-    print("  " + "-" * 40)
-    for coach in coaches:
-        print("  {:<22} {:<8} {:<10}".format(
-            coach["name"], str(coach["pace"]), str(coach["rotation_size"]) + " players"
-        ))
-
-    # --- STYLE FIT TEST ---
-    print("")
-    print("=" * 65)
-    print("  STYLE FIT TEST")
-    print("=" * 65)
-
-    fast_wing = create_player("Fast Wing", "SF", "Freshman")
-    fast_wing["speed"] = 18
-    fast_wing["three_point"] = 16
-    fast_wing["finishing"] = 15
-    fast_wing["ball_handling"] = 14
-    fast_wing["lateral_quickness"] = 16
-
-    slow_big = create_player("Slow Big", "C", "Freshman")
-    slow_big["speed"] = 6
-    slow_big["strength"] = 17
-    slow_big["rebounding"] = 17
-    slow_big["finishing"] = 15
-    slow_big["post_scoring"] = 16
-
-    smart_pg = create_player("Smart PG", "PG", "Freshman")
-    smart_pg["court_vision"] = 17
-    smart_pg["passing"] = 17
-    smart_pg["decision_making"] = 16
-    smart_pg["ball_handling"] = 15
-    smart_pg["speed"] = 12
-
-    print("")
-    print("  {:<22} {:<12} {:<12} {:<12}".format(
-        "Coach", "Fast Wing", "Slow Big", "Smart PG"))
-    print("  " + "-" * 58)
-    for coach in coaches:
-        wing_fit  = calculate_style_fit(fast_wing, coach)
-        big_fit   = calculate_style_fit(slow_big,  coach)
-        pg_fit    = calculate_style_fit(smart_pg,  coach)
-        print("  {:<22} {:<12} {:<12} {:<12}".format(
-            coach["name"],
-            str(wing_fit) + "/100",
-            str(big_fit)  + "/100",
-            str(pg_fit)   + "/100",
-        ))
+    print("  (healthy: under 5%)")

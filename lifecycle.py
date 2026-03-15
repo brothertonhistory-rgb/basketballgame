@@ -1,23 +1,50 @@
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Player Lifecycle v0.4
+# COLLEGE HOOPS SIM -- Player Lifecycle v0.5
 # Closes the loop between recruiting and rosters.
 #
 # Called once per season, AFTER simulate_world_season()
 # and AFTER resolve_full_recruiting_cycle().
 #
 # Order of operations every season turnover:
-#   1. Develop returning players  (NEW in v0.4)
-#   2. Graduate seniors           (remove from roster)
-#   3. Age remaining players      (Fr->So->Jr->Sr)
-#   4. Enroll committed recruits  (add to roster as Freshmen)
-#   5. Reset recruiting state     (clear boards for next cycle)
+#   1. Develop returning players
+#   2. Graduate seniors
+#   3. Age remaining players
+#   4. Enroll committed recruits
+#   5. Reset recruiting state
+#   6. POST-ENROLLMENT ROSTER FLOOR CHECK  (NEW v0.5)
+#   7. Allocate minutes for new roster
+#   8. Update cohesion
 #
-# v0.4 CHANGES:
-#   - Development runs BEFORE graduation so seniors get their final
-#     offseason improvement before they leave.
-#   - develop_player() from player.py is called on every player.
-#   - Breakthroughs are tracked world-wide and reported.
-#   - Development summary added to lifecycle_summary.
+# v0.5 CHANGES -- Roster Floor Check:
+#
+#   After all normal enrollment, any program below their tiered
+#   floor target gets additional forced enrollments from the
+#   unsigned recruit pool. The aggressiveness of the search is
+#   driven by the coach's roster_fill_aggressiveness attribute
+#   (1-10, derived in coach.py v0.4).
+#
+#   TIERED FLOOR TARGETS (by conference tier):
+#     power      (SEC, Big Ten etc): target 12, absolute floor 10
+#     high_major (AAC, A-10 etc):    target 12, absolute floor 11
+#     mid_major  (MVC, MAC etc):     target 13, absolute floor 11
+#     low_major  (Big South etc):    target 13, absolute floor 11
+#     floor_conf (SWAC, MEAC etc):   target 13, absolute floor 11
+#
+#   AGGRESSIVENESS TIERS:
+#     7-10: will take any available recruit, minimal talent bar
+#     4-6:  modest talent bar (true_talent >= 10)
+#     1-3:  only signs players meeting a real bar (true_talent >= 20)
+#           but still fills to absolute floor regardless
+#
+#   ABSOLUTE FLOOR (10 for power, 11 for everyone else):
+#     Overrides aggressiveness. Below this, a program takes anyone
+#     available regardless of coach philosophy. No program ever
+#     ends a cycle with fewer than their absolute floor.
+#
+# v0.4 CHANGES (preserved):
+#   Development runs before graduation.
+#   develop_player() from player.py called on every player.
+#   Breakthroughs tracked world-wide.
 # -----------------------------------------
 
 from player import create_player, develop_player
@@ -29,6 +56,38 @@ YEAR_PROGRESSION = {
     "Senior":    "Senior",
 }
 
+# Tiered roster floor targets and absolute minimums
+# target = what the coach actively tries to reach
+# floor  = absolute minimum, overrides all coach philosophy
+ROSTER_FLOOR_CONFIG = {
+    "power":      {"target": 12, "floor": 10},
+    "high_major": {"target": 12, "floor": 11},
+    "mid_major":  {"target": 13, "floor": 11},
+    "low_major":  {"target": 13, "floor": 11},
+    "floor_conf": {"target": 13, "floor": 11},
+}
+_DEFAULT_FLOOR_CONFIG = {"target": 13, "floor": 11}
+
+# Talent bar by aggressiveness tier
+# Programs below their target will sign recruits at or above this bar
+AGGRESSIVENESS_TALENT_BAR = {
+    "high":   5,    # aggressiveness 7-10: take almost anyone
+    "medium": 10,   # aggressiveness 4-6: modest bar
+    "low":    20,   # aggressiveness 1-3: real bar, but floor still enforced
+}
+
+
+def _get_aggressiveness_tier(aggressiveness):
+    if aggressiveness >= 7: return "high"
+    if aggressiveness >= 4: return "medium"
+    return "low"
+
+
+def _get_floor_config(conference):
+    from programs_data import get_conference_tier
+    tier_name = get_conference_tier(conference)["tier"]
+    return ROSTER_FLOOR_CONFIG.get(tier_name, _DEFAULT_FLOOR_CONFIG)
+
 
 # -----------------------------------------
 # MAIN ENTRY POINT
@@ -38,31 +97,33 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
     """
     Call this once per year after the season and recruiting cycle are done.
     Returns (all_programs, lifecycle_summary).
-
-    v0.5: Minutes allocation and cohesion update added after roster turnover.
-          Previous season's minutes are captured before turnover so
-          continuity score can compare returning vs departing players.
-
-    v0.4: Development now runs first, before graduation.
     """
     from roster_minutes import allocate_minutes
     from cohesion import update_cohesion
 
     total_graduated     = 0
     total_enrolled      = 0
+    total_floor_fills   = 0
     total_developed     = 0
     total_breakthroughs = 0
     breakthrough_log    = []
     program_reports     = []
 
+    # Build unsigned pool once for the floor check pass
+    # These are recruits who didn't commit through the normal cycle
+    unsigned_pool = [
+        r for r in recruiting_class
+        if r.get("status") in ("unsigned", "available")
+    ]
+    # Sort by true_talent descending so programs get best available
+    unsigned_pool.sort(key=lambda r: r.get("true_talent", 0), reverse=True)
+
     for program in all_programs:
         coach = program.get("coach", {})
 
-        # Capture previous minutes BEFORE roster changes
-        # Used by cohesion to calculate continuity score
         previous_minutes = dict(program.get("minutes_allocation", {}))
 
-        # --- STEP 1: DEVELOP RETURNING PLAYERS ---
+        # --- STEP 1: DEVELOP ---
         dev_count, bt_count, bt_events = _develop_roster(
             program, coach, season_year
         )
@@ -73,7 +134,7 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
         # --- STEP 2: GRADUATE SENIORS ---
         graduated = _graduate_seniors(program)
 
-        # --- STEP 3: AGE REMAINING PLAYERS ---
+        # --- STEP 3: AGE ---
         _age_roster(program)
 
         # --- STEP 4: ENROLL COMMITTED RECRUITS ---
@@ -82,13 +143,15 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
         # --- STEP 5: RESET RECRUITING STATE ---
         _reset_recruiting_state(program)
 
-        # --- STEP 6: ALLOCATE MINUTES FOR NEW ROSTER ---
-        # Must happen after enrollment so new players are included
+        # --- STEP 6: ROSTER FLOOR CHECK ---
+        floor_filled = _enforce_roster_floor(program, coach, unsigned_pool)
+        total_floor_fills += floor_filled
+        enrolled += floor_filled
+
+        # --- STEP 7: ALLOCATE MINUTES ---
         allocate_minutes(program)
 
-        # --- STEP 7: UPDATE COHESION ---
-        # Uses previous_minutes to calculate continuity score
-        # Finds veteran combo bonds from new roster minutes
+        # --- STEP 8: UPDATE COHESION ---
         update_cohesion(program, previous_minutes=previous_minutes)
 
         total_graduated += graduated
@@ -98,6 +161,7 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
             "name":          program["name"],
             "graduated":     graduated,
             "enrolled":      enrolled,
+            "floor_filled":  floor_filled,
             "roster_size":   len(program["roster"]),
             "developed":     dev_count,
             "breakthroughs": bt_count,
@@ -109,6 +173,7 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
     summary = {
         "total_graduated":     total_graduated,
         "total_enrolled":      total_enrolled,
+        "total_floor_fills":   total_floor_fills,
         "total_developed":     total_developed,
         "total_breakthroughs": total_breakthroughs,
         "breakthrough_log":    breakthrough_log,
@@ -123,30 +188,15 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
 # -----------------------------------------
 
 def _develop_roster(program, coach, season_year):
-    """
-    Runs development for every player on the roster.
-    Returns (dev_count, breakthrough_count, breakthrough_events).
-
-    Seniors develop too -- this is their final offseason.
-    Freshmen who just enrolled this cycle are NOT developed yet --
-    they enrolled after the season, so their development starts
-    next offseason.
-    """
-    dev_count       = 0
-    bt_count        = 0
+    dev_count           = 0
+    bt_count            = 0
     breakthrough_events = []
 
     for player in program["roster"]:
-        # Skip players who just enrolled (status still "enrolled" from
-        # this cycle's recruiting -- they haven't played a season yet)
-        # Note: newly enrolled freshmen won't have this flag set in the
-        # current cycle since development runs before enrollment.
-        # All current roster players have played at least one season.
-
         player, report = develop_player(
             player, coach, season_year,
-            training_focus=None,   # FUTURE HOOK: training camp
-            morale_modifier=1.0,   # FUTURE HOOK: playing time morale
+            training_focus=None,
+            morale_modifier=1.0,
         )
 
         if report["total_gain"] > 0:
@@ -155,12 +205,12 @@ def _develop_roster(program, coach, season_year):
         if report["breakthrough"]:
             bt_count += 1
             breakthrough_events.append({
-                "program":  program["name"],
-                "player":   player["name"],
-                "position": player["position"],
-                "year":     player["year"],
-                "arc_type": player["arc_type"],
-                "attrs":    report["breakthrough_attrs"],
+                "program":    program["name"],
+                "player":     player["name"],
+                "position":   player["position"],
+                "year":       player["year"],
+                "arc_type":   player["arc_type"],
+                "attrs":      report["breakthrough_attrs"],
                 "total_gain": report["total_gain"],
             })
 
@@ -172,7 +222,6 @@ def _develop_roster(program, coach, season_year):
 # -----------------------------------------
 
 def _graduate_seniors(program):
-    """Removes all Seniors from the roster. Returns count removed."""
     seniors = [p for p in program["roster"] if p.get("year", "") == "Senior"]
     program["roster"] = [p for p in program["roster"] if p.get("year", "") != "Senior"]
     return len(seniors)
@@ -183,7 +232,6 @@ def _graduate_seniors(program):
 # -----------------------------------------
 
 def _age_roster(program):
-    """Advances every remaining player one year."""
     for player in program["roster"]:
         current_year = player.get("year", "Freshman")
         player["year"] = YEAR_PROGRESSION.get(current_year, "Sophomore")
@@ -194,10 +242,6 @@ def _age_roster(program):
 # -----------------------------------------
 
 def _enroll_recruits(program, recruiting_class):
-    """
-    Finds all recruits committed to this program and adds them
-    to the roster as Freshmen. Returns count enrolled.
-    """
     program_name = program["name"]
 
     incoming = [
@@ -216,8 +260,123 @@ def _enroll_recruits(program, recruiting_class):
     return enrolled
 
 
+# -----------------------------------------
+# STEP 6: ROSTER FLOOR CHECK (v0.5)
+# -----------------------------------------
+
+def _enforce_roster_floor(program, coach, unsigned_pool):
+    """
+    After all normal enrollment, ensures no program falls below
+    their tiered floor target or absolute minimum.
+
+    Uses coach's roster_fill_aggressiveness to set the talent bar
+    for recruits they're willing to take. The absolute floor
+    overrides aggressiveness -- below it, take anyone available.
+
+    Modifies unsigned_pool in place (removes enrolled recruits).
+    Returns count of emergency enrollments.
+    """
+    conference   = program.get("conference", "")
+    floor_config = _get_floor_config(conference)
+    target       = floor_config["target"]
+    abs_floor    = floor_config["floor"]
+
+    current_size = len(program["roster"])
+
+    if current_size >= target:
+        return 0
+
+    aggressiveness = coach.get("roster_fill_aggressiveness", 5)
+    agg_tier       = _get_aggressiveness_tier(aggressiveness)
+    talent_bar     = AGGRESSIVENESS_TALENT_BAR[agg_tier]
+
+    enrolled = 0
+
+    # Get current position counts for need-aware filling
+    pos_counts = {}
+    for p in program["roster"]:
+        pos = p.get("position", "SF")
+        pos_counts[pos] = pos_counts.get(pos, 0) + 1
+
+    position_needs = {
+        "PG": max(0, 2 - pos_counts.get("PG", 0)),
+        "SG": max(0, 2 - pos_counts.get("SG", 0)),
+        "SF": max(0, 3 - pos_counts.get("SF", 0)),
+        "PF": max(0, 3 - pos_counts.get("PF", 0)),
+        "C":  max(0, 2 - pos_counts.get("C",  0)),
+    }
+
+    slots_to_fill = target - current_size
+
+    for _ in range(slots_to_fill):
+        if len(program["roster"]) >= target:
+            break
+
+        current_size = len(program["roster"])
+        below_abs_floor = current_size < abs_floor
+
+        # Determine effective talent bar for this slot
+        # Below absolute floor: take anyone regardless of philosophy
+        effective_bar = 0 if below_abs_floor else talent_bar
+
+        filled = False
+
+        # Try most-needed position first
+        sorted_needs = sorted(
+            position_needs.items(), key=lambda x: x[1], reverse=True
+        )
+
+        for pos, need in sorted_needs:
+            if need <= 0:
+                continue
+            for i, recruit in enumerate(unsigned_pool):
+                if recruit.get("status") not in ("unsigned", "available"):
+                    continue
+                if recruit.get("position") != pos:
+                    continue
+                if recruit.get("true_talent", 0) < effective_bar:
+                    continue
+
+                player = _recruit_to_player(recruit, program.get("conference", ""))
+                program["roster"].append(player)
+                recruit["status"] = "enrolled"
+                recruit["committed_to"] = program["name"]
+                unsigned_pool.pop(i)
+                position_needs[pos] = max(0, position_needs[pos] - 1)
+                enrolled += 1
+                filled = True
+                break
+
+            if filled:
+                break
+
+        # If no position-specific recruit found, take anyone at/above bar
+        if not filled:
+            for i, recruit in enumerate(unsigned_pool):
+                if recruit.get("status") not in ("unsigned", "available"):
+                    continue
+                if recruit.get("true_talent", 0) < effective_bar:
+                    continue
+
+                player = _recruit_to_player(recruit, program.get("conference", ""))
+                program["roster"].append(player)
+                recruit["status"] = "enrolled"
+                recruit["committed_to"] = program["name"]
+                unsigned_pool.pop(i)
+                pos = recruit.get("position", "SF")
+                position_needs[pos] = max(0, position_needs.get(pos, 0) - 1)
+                enrolled += 1
+                filled = True
+                break
+
+        if not filled:
+            # No recruits available at all -- stop trying
+            break
+
+    return enrolled
+
+
 def _recruit_to_player(recruit, conference=""):
-    """Converts a recruit dict into a player dict."""
     player = create_player(
         name       = recruit["name"],
         position   = recruit["position"],
@@ -276,7 +435,6 @@ def _recruit_to_player(recruit, conference=""):
 # -----------------------------------------
 
 def _reset_recruiting_state(program):
-    """Clears recruiting board and committed list for next cycle."""
     program["recruiting_board"]   = []
     program["committed_recruits"] = []
 
@@ -286,32 +444,31 @@ def _reset_recruiting_state(program):
 # -----------------------------------------
 
 def print_lifecycle_summary(lifecycle_summary, season_year):
-    """Prints a readable season turnover summary."""
     print("")
     print("=" * 60)
     print("  " + str(season_year) + " SEASON TURNOVER -- ROSTER LIFECYCLE")
     print("=" * 60)
     print("  Players graduated:   " + str(lifecycle_summary["total_graduated"]))
     print("  Recruits enrolled:   " + str(lifecycle_summary["total_enrolled"]))
+    print("  Floor fills:         " + str(lifecycle_summary.get("total_floor_fills", 0)))
     print("  Players developed:   " + str(lifecycle_summary["total_developed"]))
     print("  Breakthroughs:       " + str(lifecycle_summary["total_breakthroughs"]))
 
     thin_rosters = [
         r for r in lifecycle_summary["program_reports"]
-        if r["roster_size"] < 7
+        if r["roster_size"] < 10
     ]
     if thin_rosters:
         print("")
-        print("  WARNING -- programs with thin rosters (<7 players):")
+        print("  WARNING -- programs below absolute floor (<10 players):")
         for r in thin_rosters:
             print("    " + r["name"] + ": " + str(r["roster_size"]) + " players")
 
-    # Print breakthroughs
     bt_log = lifecycle_summary.get("breakthrough_log", [])
     if bt_log:
         print("")
         print("  BREAKTHROUGH PLAYERS this offseason:")
-        for bt in bt_log[:15]:   # cap at 15 for readability
+        for bt in bt_log[:15]:
             attr_str = ", ".join(
                 a["attr"] + " " + str(a["from"]) + "->" + str(a["to"])
                 for a in bt["attrs"]
@@ -331,13 +488,14 @@ def print_lifecycle_summary(lifecycle_summary, season_year):
         reverse=True
     )[:10]
     for r in top_enrolled:
+        floor_note = (" [+" + str(r["floor_filled"]) + " floor]"
+                      if r.get("floor_filled", 0) > 0 else "")
         print("    " + r["name"].ljust(24) +
-              str(r["enrolled"]) + " enrolled  |  " +
-              str(r["roster_size"]) + " on roster")
+              str(r["enrolled"]) + " enrolled" + floor_note +
+              "  |  " + str(r["roster_size"]) + " on roster")
 
 
 def print_program_roster_state(program):
-    """Prints a year-by-year roster breakdown for one program."""
     roster = program.get("roster", [])
     year_counts = {"Freshman": 0, "Sophomore": 0, "Junior": 0, "Senior": 0}
     for p in roster:
@@ -378,87 +536,47 @@ if __name__ == "__main__":
     )
     print("  Committed: " + str(cycle_summary["total_commits"]))
 
-    # Snapshot a player BEFORE development
-    kentucky = next(p for p in all_programs if p["name"] == "Kentucky")
-    if kentucky["roster"]:
-        test_player = next(
-            (p for p in kentucky["roster"] if p.get("year") == "Sophomore"),
-            kentucky["roster"][0]
-        )
-        before_finishing  = test_player["finishing"]
-        before_rebounding = test_player["rebounding"]
-        before_passing    = test_player["passing"]
-        test_name         = test_player["name"]
-
-    print("")
-    print("Running lifecycle with development...")
+    print("Running lifecycle with floor enforcement...")
     all_programs, lifecycle_summary = advance_season(
         all_programs, recruiting_class, season_year=2025
     )
 
     print_lifecycle_summary(lifecycle_summary, season_year=2025)
 
-    # Development verification
     print("")
-    print("=== DEVELOPMENT VERIFICATION ===")
-    print("  Total players developed: " + str(lifecycle_summary["total_developed"]))
-    print("  Breakthroughs:           " + str(lifecycle_summary["total_breakthroughs"]))
-
-    total_players = sum(len(p["roster"]) for p in all_programs)
-    print("  Total players on rosters: " + str(total_players))
-    bt_rate = lifecycle_summary["total_breakthroughs"] / max(1, total_players) * 100
-    print("  Breakthrough rate: " + str(round(bt_rate, 2)) + "%")
-    print("  (healthy: 1-4% of players = ~30-120 per season)")
-
-    # Verify rosters are still healthy
-    thin = [p for p in all_programs if len(p.get("roster", [])) < 8]
+    print("=== ROSTER FLOOR VERIFICATION ===")
+    thin = [p for p in all_programs if len(p.get("roster", [])) < 10]
     if thin:
-        print("")
-        print("WARNING: " + str(len(thin)) + " programs with thin rosters:")
-        for p in thin[:5]:
+        print("FAIL: " + str(len(thin)) + " programs below absolute floor:")
+        for p in thin:
             print("  " + p["name"] + ": " + str(len(p["roster"])) + " players")
     else:
-        print("")
-        print("PASS: All programs have 8+ players after lifecycle.")
+        print("PASS: All programs at 10+ players.")
 
-    # Spot check: development comparison between high and low dev coaches
-    print("")
-    print("=== COACH DEVELOPMENT COMPARISON ===")
-    print("  Finding programs with high vs low player_development coaches...")
-
-    high_dev_programs = sorted(
-        [p for p in all_programs if p.get("coach", {}).get("player_development", 0) >= 16],
-        key=lambda p: p["coach"]["player_development"],
-        reverse=True
-    )[:3]
-
-    low_dev_programs = sorted(
-        [p for p in all_programs if p.get("coach", {}).get("player_development", 0) <= 7],
-        key=lambda p: p["coach"]["player_development"]
-    )[:3]
+    at_target = [p for p in all_programs if len(p.get("roster", [])) >= 12]
+    print("Programs at 12+ players: " + str(len(at_target)) + " of " + str(len(all_programs)))
 
     print("")
-    print("  High development coaches:")
-    for p in high_dev_programs:
-        dev_rating = p["coach"]["player_development"]
-        bts = next((r["breakthroughs"] for r in lifecycle_summary["program_reports"]
-                    if r["name"] == p["name"]), 0)
-        devs = next((r["developed"] for r in lifecycle_summary["program_reports"]
-                     if r["name"] == p["name"]), 0)
-        print("    " + p["name"].ljust(24) +
-              "dev_rating: " + str(dev_rating) +
-              "  players improved: " + str(devs) +
-              "  breakthroughs: " + str(bts))
+    print("=== FLOOR FILL SUMMARY ===")
+    filled = [r for r in lifecycle_summary["program_reports"] if r.get("floor_filled", 0) > 0]
+    print("Programs that needed floor fills: " + str(len(filled)))
+    for r in sorted(filled, key=lambda x: x["floor_filled"], reverse=True)[:10]:
+        print("  " + r["name"].ljust(24) +
+              "floor filled: " + str(r["floor_filled"]) +
+              "  final roster: " + str(r["roster_size"]))
 
     print("")
-    print("  Low development coaches:")
-    for p in low_dev_programs:
-        dev_rating = p["coach"]["player_development"]
-        bts = next((r["breakthroughs"] for r in lifecycle_summary["program_reports"]
-                    if r["name"] == p["name"]), 0)
-        devs = next((r["developed"] for r in lifecycle_summary["program_reports"]
-                     if r["name"] == p["name"]), 0)
-        print("    " + p["name"].ljust(24) +
-              "dev_rating: " + str(dev_rating) +
-              "  players improved: " + str(devs) +
-              "  breakthroughs: " + str(bts))
+    print("=== ROSTER FILL AGGRESSIVENESS SAMPLE ===")
+    print("  Checking that coach attribute is driving behavior...")
+    for prog in all_programs[:5]:
+        c = prog.get("coach", {})
+        agg = c.get("roster_fill_aggressiveness", "?")
+        conf = prog.get("conference", "?")
+        from programs_data import get_conference_tier
+        tier = get_conference_tier(conf)["tier"]
+        floor_cfg = ROSTER_FLOOR_CONFIG.get(tier, _DEFAULT_FLOOR_CONFIG)
+        print("  " + prog["name"].ljust(24) +
+              "conf_tier: " + tier.ljust(12) +
+              "target: " + str(floor_cfg["target"]) +
+              "  floor: " + str(floor_cfg["floor"]) +
+              "  coach_agg: " + str(agg) + "/10")
