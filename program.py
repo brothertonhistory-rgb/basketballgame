@@ -1,5 +1,6 @@
 import random
 from player import generate_team, get_team_ratings
+from coach import generate_coach
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Program Database v0.1
@@ -79,6 +80,9 @@ def create_program(name, nickname, city, state, division, conference,
     # Generate the roster based on current prestige
     roster_data = generate_team(name, prestige=prestige_for_players)
 
+    # Generate a coach -- prestige influences competence ceiling
+    coach = generate_coach(coach_name, prestige=prestige_current)
+
     program = {
         # --- IDENTITY ---
         "name":         name,
@@ -101,6 +105,7 @@ def create_program(name, nickname, city, state, division, conference,
         # --- COACHING ---
         "coach_name":   coach_name,
         "coach_seasons": 0,            # Seasons with this coach
+        "coach":        coach,         # Full coaching philosophy object
 
         # --- INSTITUTIONAL CHARACTER -- System 9 ---
         "investment_appetite":   random.randint(1, 10),   # How much they spend
@@ -360,6 +365,17 @@ if __name__ == "__main__":
         kentucky = apply_gravity_pull(kentucky)
         print("After season " + str(season) + ": " +
               str(kentucky["prestige_current"]) + " (" + kentucky["prestige_grade"] + ")")
+
+    print("")
+    print("=== Coach Verification ===")
+    for p in programs[:3]:
+        c = p["coach"]
+        print(p["name"] + " -- Coach: " + c["name"] +
+              "  Archetype: " + c["archetype"] +
+              "  Pace: " + str(c["pace"]) +
+              "  Rotation: " + str(c["rotation_size"]) + "p" +
+              "  Off: " + str(c["offensive_skill"]) + "/20" +
+              "  Def: " + str(c["defensive_skill"]) + "/20")
 
     print("")
     print("=== Record Tracking Test ===")

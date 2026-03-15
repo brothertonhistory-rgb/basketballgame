@@ -269,6 +269,31 @@ def generate_player_name(conference=""):
     return full_name, heritage
 
 
+# Coach name demographics -- reflects real D1 head coach population
+COACH_HERITAGE_WEIGHTS = {
+    "white_european":   62,
+    "african_american": 30,
+    "latino":            6,
+    "asian_pacific":     1,
+    "mixed":             1,
+}
+
+def generate_coach_name():
+    """
+    Generates a realistic coach name.
+    Skews toward white_european to reflect real D1 coaching demographics,
+    with meaningful African American representation.
+    Returns: full_name string
+    """
+    population = []
+    for heritage, weight in COACH_HERITAGE_WEIGHTS.items():
+        population.extend([heritage] * weight)
+    heritage = random.choice(population)
+
+    first, last, _ = get_name(heritage=heritage if heritage != "mixed" else None)
+    return first + " " + last
+
+
 # -----------------------------------------
 # TEST
 # -----------------------------------------

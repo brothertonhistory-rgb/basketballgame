@@ -1,4 +1,5 @@
 import random
+from names import generate_coach_name
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Full D1 Program Database v0.3
@@ -51,7 +52,7 @@ def get_gravity(prestige, conference):
 
 
 def get_coach_name(school_name):
-    return "Coach " + school_name.split()[-1]
+    return generate_coach_name()
 
 
 ALL_D1_PROGRAMS = [
