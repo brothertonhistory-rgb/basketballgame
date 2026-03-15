@@ -3,8 +3,16 @@ from player import generate_team, get_team_ratings
 from coach import generate_coach
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Program Database v0.4
+# COLLEGE HOOPS SIM -- Program Database v0.5
 # System 6 of the Design Bible
+#
+# v0.5 CHANGES -- Tournament Buzz System:
+#   prestige_current = pure gravity-based prestige. No tournament inflation.
+#   tournament_buzz  = separate additive layer from tourney performance.
+#   effective_prestige = prestige_current + tournament_buzz["current"]
+#   Recruiting and ranking read effective_prestige.
+#   Throne check, universe gravity, conference pressure read prestige_current.
+#   Deep runs for low-gravity programs linger for years.
 #
 # v0.3 CHANGES -- Prestige Stability:
 #   Performance multiplier: 3 (was 6). Hard cap: +-4 pts/season.
@@ -124,7 +132,187 @@ def create_program(name, nickname, city, state, division, conference,
             "conference_ceiling":    None,
             "conference_floor":      None,
         },
+        # Tournament buzz -- separate from prestige_current
+        "tournament_buzz": _init_tournament_buzz(),
     }
+
+
+# -----------------------------------------
+# TOURNAMENT BUZZ SYSTEM
+# -----------------------------------------
+
+def _init_tournament_buzz():
+    """Returns a fresh tournament_buzz dict."""
+    return {
+        "current":       0.0,   # current buzz points (added to prestige for recruiting/display)
+        "peak":          0.0,   # highest buzz ever reached
+        "last_result":   "none", # last tournament result string
+        "last_year":     None,   # year of last tournament appearance
+        "consecutive_appearances": 0,  # streak of tournament appearances
+        "deep_run_memory": 0.0,  # accumulated deep-run legacy (slows decay for historic runs)
+    }
+
+
+def get_effective_prestige(program):
+    """
+    Returns the program's effective prestige for recruiting and display.
+    effective_prestige = prestige_current + tournament_buzz["current"]
+    Capped at 100.
+
+    All simulation logic (throne check, universe gravity, conference pressure)
+    uses prestige_current directly. Only recruiting and display use this.
+    """
+    buzz = program.get("tournament_buzz", {}).get("current", 0.0)
+    return min(100.0, program["prestige_current"] + buzz)
+
+
+def ensure_tournament_buzz(program):
+    """Initializes tournament_buzz if not present (migration safety)."""
+    if "tournament_buzz" not in program:
+        program["tournament_buzz"] = _init_tournament_buzz()
+    else:
+        # Ensure all keys exist for older program dicts
+        defaults = _init_tournament_buzz()
+        for key, val in defaults.items():
+            if key not in program["tournament_buzz"]:
+                program["tournament_buzz"][key] = val
+    return program
+
+
+# Round result ordering for comparison
+_RESULT_RANK = {
+    "none":       0,
+    "r64":        1,
+    "r32":        2,
+    "sweet_16":   3,
+    "elite_8":    4,
+    "final_four": 5,
+    "champion":   6,
+}
+
+# Buzz base values by round reached
+_BUZZ_BASE = {
+    "r64":        0.1,
+    "r32":        0.3,
+    "sweet_16":   1.0,
+    "elite_8":    2.5,
+    "final_four": 5.0,
+    "champion":   8.0,
+}
+
+# Deep run threshold -- Final Four or better triggers linger mechanic
+_DEEP_RUN_RESULTS = {"final_four", "champion"}
+_DEEP_RUN_LINGER_RATE = 0.5   # deep runs decay at half normal rate
+
+
+def apply_tournament_buzz(program, result, season_year):
+    """
+    Called by tournament.py after each team's run ends.
+    Adds buzz based on result, scaled by how impressive it is
+    relative to the program's prestige_gravity (not current prestige).
+
+    result: string -- "r64", "r32", "sweet_16", "elite_8", "final_four", "champion"
+    """
+    ensure_tournament_buzz(program)
+    buzz      = program["tournament_buzz"]
+    gravity   = program["prestige_gravity"]
+
+    # Base buzz value for this result
+    base = _BUZZ_BASE.get(result, 0.0)
+    if base == 0.0:
+        return program
+
+    # Gravity-relative multiplier --
+    # How impressive is this result given the program's TRUE prestige level?
+    # A gravity-20 Sweet 16 is far more impressive than a gravity-80 Sweet 16.
+    # Multiplier table based on gravity tier:
+    if gravity >= 90:    mult = 0.3
+    elif gravity >= 75:  mult = 0.5
+    elif gravity >= 55:  mult = 0.8
+    elif gravity >= 35:  mult = 1.3
+    elif gravity >= 20:  mult = 1.8
+    else:                mult = 2.5   # floor_conf programs
+
+    buzz_earned = round(base * mult, 2)
+
+    # Add to current buzz
+    buzz["current"]   = round(buzz["current"] + buzz_earned, 2)
+    buzz["peak"]      = round(max(buzz["peak"], buzz["current"]), 2)
+    buzz["last_result"] = result
+    buzz["last_year"]   = season_year
+    buzz["consecutive_appearances"] += 1
+
+    # Deep run memory -- accumulates for historic runs, slows future decay
+    if result in _DEEP_RUN_RESULTS:
+        buzz["deep_run_memory"] = round(
+            buzz.get("deep_run_memory", 0.0) + buzz_earned * 0.3, 2
+        )
+
+    return program
+
+
+def apply_buzz_decay(program, made_tournament, tournament_result, season_year):
+    """
+    Called each season after the tournament resolves.
+    Decays tournament_buzz based on this season's performance
+    relative to gravity expectations.
+
+    made_tournament:   bool
+    tournament_result: string or "none"
+
+    Decay rules:
+      Missed tournament entirely:  -60% of current buzz
+      R64 loss:                    -20% of current buzz
+      R32 loss:                    -10% of current buzz
+      Sweet 16+:                   -5% (minimal decay -- maintaining buzz)
+      Result BETTER than last year: no decay, small addition handled by apply_tournament_buzz
+
+    Deep run memory reduces decay rate:
+      A program with significant deep_run_memory loses buzz more slowly.
+      This is the "Final Four echoes for a decade" mechanic for low-gravity programs.
+
+    Buzz floor: 0.0 (never negative)
+    """
+    ensure_tournament_buzz(program)
+    buzz    = program["tournament_buzz"]
+    current = buzz["current"]
+
+    if current <= 0.0:
+        return program
+
+    # Determine base decay rate
+    if not made_tournament:
+        buzz["consecutive_appearances"] = 0
+        base_decay = 0.60
+    else:
+        result_rank = _RESULT_RANK.get(tournament_result, 0)
+        if result_rank <= 1:     # r64 loss
+            base_decay = 0.20
+        elif result_rank == 2:   # r32 loss
+            base_decay = 0.10
+        elif result_rank == 3:   # sweet 16
+            base_decay = 0.05
+        else:                    # elite 8+
+            base_decay = 0.02
+
+    # Deep run memory reduces decay
+    # Each point of deep_run_memory reduces decay by 5%, capped at 40% reduction
+    memory_reduction = min(0.40, buzz.get("deep_run_memory", 0.0) * 0.05)
+    effective_decay  = max(0.0, base_decay - memory_reduction)
+
+    # Deep runs decay at half rate regardless (linger mechanic)
+    if buzz.get("last_result") in _DEEP_RUN_RESULTS and not made_tournament:
+        effective_decay *= _DEEP_RUN_LINGER_RATE
+
+    # Apply decay
+    decay_amount    = round(current * effective_decay, 2)
+    buzz["current"] = round(max(0.0, current - decay_amount), 2)
+
+    # Slowly erode deep_run_memory over time
+    if buzz.get("deep_run_memory", 0.0) > 0:
+        buzz["deep_run_memory"] = round(
+            max(0.0, buzz["deep_run_memory"] - 0.1), 2
+        )
 
 
 def apply_gravity_pull(program):

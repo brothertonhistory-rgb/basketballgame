@@ -1,4 +1,5 @@
 import random
+from program import get_effective_prestige
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Recruiting Offers & Interest v0.5
@@ -250,7 +251,7 @@ def generate_offers(all_programs, recruiting_class):
         recruits_by_position[pos].append(recruit)
 
     for program in all_programs:
-        prestige           = program["prestige_current"]
+        prestige           = get_effective_prestige(program)
         tier               = get_prestige_tier(prestige)
         star_min, star_max = STAR_RANGE[tier]
         offers_per_need    = OFFERS_PER_NEED[tier]
@@ -394,7 +395,7 @@ def calculate_interest_scores(all_programs, recruiting_class):
             continue
 
         best_offer_prestige = max(
-            (programs_by_name[pn]["prestige_current"]
+            (get_effective_prestige(programs_by_name[pn])
              for pn in recruit["offer_list"]
              if pn in programs_by_name),
             default=0
@@ -408,7 +409,7 @@ def calculate_interest_scores(all_programs, recruiting_class):
             score = _calculate_base_interest(recruit, program)
 
             prestige_priority = recruit.get("priority_prestige", 5)
-            this_prestige     = program["prestige_current"]
+            this_prestige     = get_effective_prestige(program)
             gap               = best_offer_prestige - this_prestige
 
             if gap > 15 and prestige_priority >= 6:
@@ -424,7 +425,7 @@ def calculate_interest_scores(all_programs, recruiting_class):
 def _calculate_base_interest(recruit, program):
     scores = {}
 
-    prestige = program["prestige_current"]
+    prestige = get_effective_prestige(program)
     scores["prestige"] = min(10, prestige / 10)
 
     needs    = assess_roster_needs(program)
@@ -676,11 +677,11 @@ if __name__ == "__main__":
         if len(r["offer_list"]) < 2:
             continue
         best_pn  = max(r["offer_list"],
-                       key=lambda pn: programs_by_name.get(pn, {}).get("prestige_current", 0))
+                       key=lambda pn: get_effective_prestige(programs_by_name.get(pn, {})) if pn in programs_by_name else 0)
         worst_pn = min(r["offer_list"],
-                       key=lambda pn: programs_by_name.get(pn, {}).get("prestige_current", 0))
-        best_p   = programs_by_name.get(best_pn, {}).get("prestige_current", 0)
-        worst_p  = programs_by_name.get(worst_pn, {}).get("prestige_current", 0)
+                       key=lambda pn: get_effective_prestige(programs_by_name.get(pn, {})) if pn in programs_by_name else 0)
+        best_p   = get_effective_prestige(programs_by_name.get(best_pn, {})) if best_pn in programs_by_name else 0
+        worst_p  = get_effective_prestige(programs_by_name.get(worst_pn, {})) if worst_pn in programs_by_name else 0
         if best_p - worst_p >= 30:
             suppressed_examples.append((r, best_pn, worst_pn,
                                         r["interest_levels"].get(best_pn, 0),

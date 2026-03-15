@@ -965,7 +965,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
 
     # Step 3c: NCAA Tournament
     all_programs, tournament_results = simulate_ncaa_tournament(
-        all_programs, auto_bids, verbose=verbose
+        all_programs, auto_bids, season_year=season_year, verbose=verbose
     )
     if verbose:
         print_tournament_summary(tournament_results, season_year)
@@ -1020,6 +1020,17 @@ def simulate_world_season(all_programs, season_year, verbose=True):
             print("  Low cohesion:      " + str(len(low_coh)) + " programs")
             print("  Veteran bonds:     " + str(total_bonds) + " total")
 
+    # Step 8: Tournament buzz decay
+    # Each program's buzz decays based on this season's tournament performance
+    # relative to gravity. Missing the tournament bleeds 60% of buzz.
+    # Deep run memory (Final Four+) slows decay for low-gravity programs.
+    from program import apply_buzz_decay
+    for program in all_programs:
+        ncaa_result   = program.get("ncaa_tournament_result", {})
+        made_tourney  = ncaa_result.get("seed") is not None
+        tourney_result = ncaa_result.get("result", "none")
+        apply_buzz_decay(program, made_tourney, tourney_result, season_year)
+
     return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results
 
 
@@ -1028,6 +1039,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
 # -----------------------------------------
 
 def print_national_standings(all_programs, season_year):
+    from program import get_effective_prestige
     ranked = sorted(
         [p for p in all_programs if p["wins"] + p["losses"] > 0],
         key=lambda p: (p["wins"] / max(1, p["wins"] + p["losses"]), p["wins"]),
@@ -1035,14 +1047,18 @@ def print_national_standings(all_programs, season_year):
     )
     print("")
     print("--- " + str(season_year) + " National Top 25 ---")
-    print("{:<3} {:<22} {:<18} {:<10} {:<10}".format(
-        "#", "Team", "Conference", "Record", "Prestige"))
-    print("-" * 68)
+    print("{:<3} {:<22} {:<18} {:<10} {:<10} {}".format(
+        "#", "Team", "Conference", "Record", "Base", "Effective"))
+    print("-" * 78)
     for i, p in enumerate(ranked[:25]):
         overall = str(p["wins"]) + "-" + str(p["losses"])
-        print("{:<3} {:<22} {:<18} {:<10} {:<10}".format(
+        ep      = round(get_effective_prestige(p), 1)
+        buzz    = round(p.get("tournament_buzz", {}).get("current", 0.0), 1)
+        ep_str  = str(ep) + (" (+"+str(buzz)+")" if buzz > 0 else "")
+        print("{:<3} {:<22} {:<18} {:<10} {:<10} {}".format(
             i+1, p["name"], p["conference"][:17], overall,
-            str(p["prestige_current"]) + " (" + p["prestige_grade"] + ")"))
+            str(p["prestige_current"]) + " (" + p["prestige_grade"] + ")",
+            ep_str))
 
     print("")
     print("--- " + str(season_year) + " Conference Leaders ---")
@@ -1178,7 +1194,7 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    for year in range(2024, 2032):
+    for year in range(2024, 2025):
         all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )

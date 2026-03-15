@@ -1,57 +1,68 @@
 import random
+from program import get_effective_prestige
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Recruiting Commitments v0.3
+# COLLEGE HOOPS SIM -- Recruiting Commitments v0.4
 # System 3 of the Design Bible
 #
-# v0.3 CHANGES:
-#   - Added PHASE 4: Emergency Signing Period.
-#     After late signing, any program projected to have fewer than
-#     ROSTER_FLOOR players forces a match with remaining unsigned recruits.
-#     Threshold dropped to near zero -- desperate programs take anyone.
-#     This acts as a hard floor enforcement: having fewer than 10 players
-#     is treated as a crisis and the system resolves it automatically.
-#   - MAX_CLASS_SIZE raised across all tiers so programs can absorb
-#     more players when the emergency period fires.
-#   - LATE_SIGNING_THRESHOLD lowered to 20 to let more recruits clear
-#     the normal late period before the emergency period is needed.
+# v0.4 CHANGES -- Roster-aware class size:
+#
+#   ROOT CAUSE OF EMPTY ROSTER BUG:
+#     Programs that win consistently graduate large senior classes
+#     every year. MAX_CLASS_SIZE was capping them at 7 recruits
+#     regardless of roster need. After 4-5 seasons a program
+#     graduating 5 seniors/year but only signing 7 freshmen
+#     slowly bleeds down to zero players.
+#
+#   FIX 1: _get_class_cap() replaces flat MAX_CLASS_SIZE lookup.
+#     Class cap is now roster-need-aware:
+#       base cap from prestige tier (unchanged)
+#       + emergency expansion if projected roster < ROSTER_TARGET
+#     A program projected to have 8 players after graduation can
+#     sign up to 5 additional recruits beyond their base cap.
+#
+#   FIX 2: ROSTER_FLOOR raised from 10 to 12.
+#     Emergency period now triggers earlier, catching thin rosters
+#     before they become critical.
+#
+#   FIX 3: ROSTER_TARGET introduced (14).
+#     Programs actively try to maintain 14 players. If projected
+#     post-graduation roster falls below this, class cap expands.
+#
+# v0.3 CHANGES (preserved):
+#   Emergency signing period. LATE_SIGNING_THRESHOLD lowered to 20.
 # -----------------------------------------
 
-# Signing thresholds (1-100 interest scale)
 EARLY_SIGNING_THRESHOLD  = 58
-LATE_SIGNING_THRESHOLD   = 20    # Lowered from 28 -- more recruits clear normally
+LATE_SIGNING_THRESHOLD   = 20
 
-# Loyalty threshold for early committers
 EARLY_COMMITTER_LOYALTY_THRESHOLD = 10
-
-# In-season contact movement
 INSEASON_INTEREST_BUMP = 3
 INSEASON_INTEREST_DROP = 1
-
-# Upset factor
-UPSET_FACTOR = 0.08
-
-# Indecision rate
+UPSET_FACTOR    = 0.08
 INDECISION_RATE = 0.08
 
-# Max class size per prestige tier
-# Raised so programs can take more players when needed
+# Base class size caps by prestige tier
+# These are the MINIMUM caps -- roster need can expand them
 MAX_CLASS_SIZE = {
-    "elite":   7,    # 80+ prestige
-    "good":    7,    # 60-79
-    "average": 6,    # 40-59
-    "low":     6,    # 20-39
-    "bottom":  5,    # under 20
+    "elite":   7,
+    "good":    7,
+    "average": 6,
+    "low":     6,
+    "bottom":  5,
 }
 
-# Hard roster floor -- below this triggers the emergency signing period
-# Any program projected to end the cycle with fewer than this many players
-# will forcibly sign unsigned recruits until they hit this number.
-ROSTER_FLOOR = 10
+# Target roster size -- programs try to stay at or above this
+ROSTER_TARGET = 14
 
-# Emergency signing threshold -- effectively zero resistance
-# Programs in crisis will take any available recruit at any position
+# Hard floor -- below this triggers emergency signing
+ROSTER_FLOOR = 12
+
+# Emergency signing threshold
 EMERGENCY_SIGNING_THRESHOLD = 5
+
+# Maximum class size under any circumstances (prevents hoarding)
+ABSOLUTE_CLASS_CAP = 12
 
 
 # -----------------------------------------
@@ -66,13 +77,63 @@ def _get_prestige_tier(prestige):
     return "bottom"
 
 
+def _projected_post_graduation_roster(program):
+    """
+    Estimates players remaining AFTER seniors graduate,
+    BEFORE any new recruits enroll.
+    This is the number the class cap needs to fill up from.
+    """
+    roster = program.get("roster", [])
+    return sum(1 for p in roster if p.get("year") != "Senior")
+
+
+def _projected_roster_size(program):
+    """
+    Estimates roster size after graduation AND after currently
+    committed recruits enroll. Used by emergency period.
+    """
+    returning = _projected_post_graduation_roster(program)
+    committed = len(program.get("committed_recruits", []))
+    return returning + committed
+
+
+def _get_class_cap(program):
+    """
+    Returns the effective class size cap for this program.
+
+    Base cap comes from prestige tier.
+    If the program is projected to be below ROSTER_TARGET after
+    graduation, the cap expands to cover the shortfall -- up to
+    ABSOLUTE_CLASS_CAP.
+
+    This prevents the slow roster bleed where consistently good
+    programs graduate large senior classes but can't sign enough
+    freshmen to stay healthy.
+    """
+    tier     = _get_prestige_tier(get_effective_prestige(program))
+    base_cap = MAX_CLASS_SIZE.get(tier, 5)
+
+    # How many players will they have after seniors leave?
+    post_graduation = _projected_post_graduation_roster(program)
+
+    # How many have they already committed?
+    already_committed = len(program.get("committed_recruits", []))
+
+    # How many more do they need to hit ROSTER_TARGET?
+    projected_with_commits = post_graduation + already_committed
+    need = max(0, ROSTER_TARGET - projected_with_commits)
+
+    # Effective cap = base + need, never exceeding ABSOLUTE_CLASS_CAP
+    effective_cap = min(ABSOLUTE_CLASS_CAP, base_cap + need)
+    return effective_cap
+
+
 def _build_full_programs_set(programs_by_name):
     """Returns set of program names that have hit their class size cap."""
     full = set()
     for name, program in programs_by_name.items():
         committed = program.get("committed_recruits", [])
-        tier = _get_prestige_tier(program["prestige_current"])
-        cap  = MAX_CLASS_SIZE.get(tier, 5)
+        cap = _get_class_cap(program)
         if len(committed) >= cap:
             full.add(name)
     return full
@@ -119,18 +180,6 @@ def _apply_upset_factor(recruit, top_program, programs_by_name, full_programs):
     choices = [p[0] for p in sorted_programs]
     weights = [3, 2, 1][:len(choices)]
     return random.choices(choices, weights=weights, k=1)[0]
-
-
-def _projected_roster_size(program):
-    """
-    Estimates how many players this program will have after graduation
-    and after currently committed recruits enroll.
-    Used to determine if the emergency period should fire.
-    """
-    roster = program.get("roster", [])
-    returning = sum(1 for p in roster if p.get("year") != "Senior")
-    committed = len(program.get("committed_recruits", []))
-    return returning + committed
 
 
 # -----------------------------------------
@@ -268,26 +317,18 @@ def resolve_emergency_signing(all_programs, recruiting_class):
     with fewer than ROSTER_FLOOR players gets a forced match with
     unsigned recruits regardless of interest score.
 
-    This models walk-ons, late signees, and emergency offers -- the
-    real-world phenomenon where programs fill rosters through any
-    available means. Having fewer than 10 players is treated as
-    a crisis. The program will take any available recruit at their
-    most needed position first, then any position.
-
-    Programs in the emergency period bypass MAX_CLASS_SIZE -- filling
-    the roster to the floor is more important than class size limits.
+    v0.4: ROSTER_FLOOR raised to 12. Triggers earlier so rosters
+    never reach zero. Programs bypass MAX_CLASS_SIZE in crisis.
     """
     emergency_commits = []
     programs_by_name  = {p["name"]: p for p in all_programs}
 
-    # Only unsigned recruits are available
-    available = [r for r in recruiting_class if r["status"] == "unsigned"
-                 or r["status"] == "available"]
+    available = [r for r in recruiting_class
+                 if r["status"] in ("unsigned", "available")]
 
     if not available:
         return all_programs, recruiting_class, emergency_commits
 
-    # Sort available recruits by true_talent desc -- programs get best available
     available_by_position = {}
     for r in available:
         pos = r["position"]
@@ -295,13 +336,11 @@ def resolve_emergency_signing(all_programs, recruiting_class):
             available_by_position[pos] = []
         available_by_position[pos].append(r)
 
-    # Sort each position pool by true_talent descending
     for pos in available_by_position:
         available_by_position[pos].sort(
             key=lambda r: r["true_talent"], reverse=True
         )
 
-    # Build a flat pool as fallback
     flat_pool = sorted(available, key=lambda r: r["true_talent"], reverse=True)
 
     for program in all_programs:
@@ -310,22 +349,16 @@ def resolve_emergency_signing(all_programs, recruiting_class):
         if projected >= ROSTER_FLOOR:
             continue
 
-        # This program is in crisis -- fill to ROSTER_FLOOR
         slots_needed = ROSTER_FLOOR - projected
 
         for _ in range(slots_needed):
-            # Try to find a recruit at a needed position first
             filled = False
             roster = program.get("roster", [])
             pos_counts = {}
             for p in roster:
                 pos = p.get("position", "SF")
                 pos_counts[pos] = pos_counts.get(pos, 0) + 1
-            for p in program.get("committed_recruits", []):
-                # We only have names here, not positions -- skip position logic
-                pass
 
-            # Try each position, most needed first
             position_needs = {
                 "PG": max(0, 2 - pos_counts.get("PG", 0)),
                 "SG": max(0, 2 - pos_counts.get("SG", 0)),
@@ -346,7 +379,6 @@ def resolve_emergency_signing(all_programs, recruiting_class):
                         _commit_recruit(recruit, program["name"], programs_by_name)
                         emergency_commits.append((recruit, program["name"]))
                         pool.remove(recruit)
-                        # Also remove from flat pool
                         if recruit in flat_pool:
                             flat_pool.remove(recruit)
                         filled = True
@@ -354,7 +386,6 @@ def resolve_emergency_signing(all_programs, recruiting_class):
                 if filled:
                     break
 
-            # If no position-specific recruit found, take anyone
             if not filled:
                 for recruit in flat_pool:
                     if recruit["status"] in ("available", "unsigned"):
@@ -369,7 +400,7 @@ def resolve_emergency_signing(all_programs, recruiting_class):
                         break
 
             if not filled:
-                break   # No recruits left anywhere
+                break
 
     return all_programs, recruiting_class, emergency_commits
 
@@ -536,15 +567,26 @@ if __name__ == "__main__":
     print("")
     print("=== ROSTER FLOOR VERIFICATION ===")
     thin = [p for p in all_programs
-            if (sum(1 for pl in p.get("roster", []) if pl.get("year") != "Senior") +
-                len(p.get("committed_recruits", []))) < ROSTER_FLOOR]
+            if _projected_roster_size(p) < ROSTER_FLOOR]
     print("  Programs still projected below " + str(ROSTER_FLOOR) +
           " after emergency period: " + str(len(thin)))
     if thin:
         for p in thin[:10]:
-            projected = (sum(1 for pl in p.get("roster", []) if pl.get("year") != "Senior") +
-                         len(p.get("committed_recruits", [])))
-            print("    " + p["name"] + ": " + str(projected) + " projected")
+            print("    " + p["name"] + ": " +
+                  str(_projected_roster_size(p)) + " projected")
+
+    print("")
+    print("=== CLASS SIZE VERIFICATION ===")
+    print("  Checking that no program exceeded ABSOLUTE_CLASS_CAP (" +
+          str(ABSOLUTE_CLASS_CAP) + "):")
+    over_cap = [p for p in all_programs
+                if len(p.get("committed_recruits", [])) > ABSOLUTE_CLASS_CAP]
+    if over_cap:
+        for p in over_cap:
+            print("  FAIL: " + p["name"] + " signed " +
+                  str(len(p.get("committed_recruits", []))))
+    else:
+        print("  PASS: All classes within absolute cap.")
 
     print("")
     print("Programs that signed at least one player: " +
