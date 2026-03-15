@@ -10,6 +10,7 @@ from recruiting_offers import generate_offers, calculate_interest_scores
 from recruiting_commitments import resolve_full_recruiting_cycle, print_cycle_summary
 from lifecycle import advance_season, print_lifecycle_summary
 from conference_tournament import simulate_all_conference_tournaments
+from tournament import simulate_ncaa_tournament, print_tournament_summary
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Season Calendar v0.7
@@ -962,6 +963,13 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         all_programs, verbose=verbose
     )
 
+    # Step 3c: NCAA Tournament
+    all_programs, tournament_results = simulate_ncaa_tournament(
+        all_programs, auto_bids, verbose=verbose
+    )
+    if verbose:
+        print_tournament_summary(tournament_results, season_year)
+
     # Step 4: Universe gravity
     apply_universe_gravity(all_programs)
 
@@ -1012,7 +1020,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
             print("  Low cohesion:      " + str(len(low_coh)) + " programs")
             print("  Veteran bonds:     " + str(total_bonds) + " total")
 
-    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids
+    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results
 
 
 # -----------------------------------------
@@ -1170,8 +1178,8 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    for year in range(2024, 2026):
-        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids = simulate_world_season(
+    for year in range(2024, 2032):
+        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
         print_prestige_movers(all_programs, start_prestiges, year)
@@ -1182,7 +1190,7 @@ if __name__ == "__main__":
 
     print("")
     print("=" * 60)
-    print("  21-SEASON WORLD SIMULATION COMPLETE")
+    print("  WORLD SIMULATION COMPLETE")
     print("=" * 60)
 
     print("")
