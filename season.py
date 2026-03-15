@@ -3,11 +3,13 @@ from game_engine import simulate_game
 from program import (create_program, record_game_result, apply_gravity_pull,
                      update_prestige_for_results, get_record_string, prestige_grade)
 from programs_data import build_all_d1_programs
+from recruiting import generate_recruiting_class, print_class_summary
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Season Calendar v0.2
+# COLLEGE HOOPS SIM -- Season Calendar v0.3
 # Full world simulation -- all 328 D1 programs
 # All conferences simulate simultaneously
+# Now includes annual recruiting class generation
 # -----------------------------------------
 
 def build_conference_schedule(programs):
@@ -147,8 +149,16 @@ def apply_gravity_drift(program, season_year, win_pct):
 def simulate_world_season(all_programs, season_year, verbose=True):
     """
     Simulates a full season for every conference in the world simultaneously.
-    Returns all programs with updated records and prestige.
+    Generates a fresh recruiting class for this season.
+    Returns all programs with updated records and prestige,
+    plus the recruiting class for this cycle.
     """
+    # --- RECRUITING CLASS -- generated at the start of each season ---
+    # This is the pool all 328 programs will eventually draw from
+    # For now we generate it and attach it to the season -- offers and
+    # commitments will be layered on in the next phase
+    recruiting_class = generate_recruiting_class(season=season_year)
+
     # Group programs by conference
     conferences = {}
     for p in all_programs:
@@ -162,6 +172,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         print("=" * 60)
         print("WORLD SEASON " + str(season_year))
         print(str(len(all_programs)) + " programs across " + str(len(conferences)) + " conferences")
+        print("Recruiting class: " + str(len(recruiting_class)) + " prospects")
         print("=" * 60)
 
     # Simulate each conference
@@ -173,7 +184,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     if verbose:
         print_national_standings(all_programs, season_year)
 
-    return all_programs
+    return all_programs, recruiting_class
 
 
 def print_national_standings(all_programs, season_year):
@@ -244,8 +255,27 @@ def print_prestige_movers(all_programs, start_prestiges, season_year):
               str(start) + " -> " + str(end))
 
 
+def print_recruiting_summary(recruiting_class, season_year):
+    """Prints a one-line recruiting class summary alongside season results."""
+    star_counts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
+    for r in recruiting_class:
+        star_counts[r["stars_consensus"]] += 1
+
+    print("")
+    print("--- " + str(season_year) + " Recruiting Class Summary ---")
+    print("  Total prospects: " + str(len(recruiting_class)))
+    print("  5-star: " + str(star_counts[5]) +
+          "  4-star: " + str(star_counts[4]) +
+          "  3-star: " + str(star_counts[3]) +
+          "  2-star: " + str(star_counts[2]) +
+          "  1-star: " + str(star_counts[1]))
+    print("  #1 prospect: " + recruiting_class[0]["name"] +
+          " (" + recruiting_class[0]["position"] + ", " +
+          recruiting_class[0]["home_state"] + ")")
+
+
 # -----------------------------------------
-# TEST -- Full world simulation
+# TEST -- Full world simulation with recruiting
 # -----------------------------------------
 
 if __name__ == "__main__":
@@ -257,11 +287,13 @@ if __name__ == "__main__":
     # Store starting prestiges for comparison
     start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    # Simulate 3 world seasons
+    # Simulate 3 world seasons -- now returns recruiting class each year
     for year in range(2024, 2027):
-        all_programs = simulate_world_season(all_programs, season_year=year, verbose=True)
+        all_programs, recruiting_class = simulate_world_season(
+            all_programs, season_year=year, verbose=True
+        )
+        print_recruiting_summary(recruiting_class, year)
         print_prestige_movers(all_programs, start_prestiges, year)
-        # Update start prestiges for next season comparison
         start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
     # Show Oklahoma State's journey
