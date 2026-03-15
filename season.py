@@ -2,7 +2,7 @@ import random
 from game_engine import simulate_game
 from program import (create_program, record_game_result, apply_gravity_pull,
                      update_prestige_for_results, get_record_string, prestige_grade,
-                     apply_conference_tier_pressure)
+                     apply_conference_tier_pressure, recalculate_gravity_pull_rate)
 from programs_data import (build_all_d1_programs, get_conference_ceiling,
                             get_conference_floor)
 from recruiting import generate_recruiting_class, print_class_summary
@@ -56,20 +56,71 @@ from lifecycle import advance_season, print_lifecycle_summary
 # -----------------------------------------
 # UNIVERSE GRAVITY
 # Bottom-heavy pyramid -- reflects real D1 population shape
-# ~326 programs total
+# ~330 programs total
+#
+# 6 tiers:
+#   blue_blood:  95-100  target  4  -- Kentucky/Duke/Kansas/UNC tier
+#   elite:       79-94   target 18  -- knocking on blue blood door
+#   high_major:  59-78   target 45  -- established power programs
+#   mid_major:   39-58   target 85  -- competitive mid-majors
+#   low_major:   21-38   target 90  -- lower tier programs
+#   floor:        1-20   target 88  -- bottom of the barrel
+#
+# Total: 4+18+45+85+90+88 = 330
 # -----------------------------------------
 
 UNIVERSE_TIERS = [
-    ("elite",       75, 100,  26),
-    ("high_major",  55,  74,  49),
-    ("mid_major",   35,  54,  88),
-    ("low_major",   15,  34, 104),
-    ("floor",        1,  14,  59),
+    ("blue_blood",    95.0, 100.0,   4),
+    ("elite",         79.0,  94.95, 18),
+    ("strong",        59.0,  78.95, 45),
+    ("average",       39.0,  58.95, 85),
+    ("below_average", 21.0,  38.95, 90),
+    ("poor",           1.0,  20.95, 88),
 ]
 
 UNIVERSE_NUDGE_NONE     = 0.0
 UNIVERSE_NUDGE_SMALL    = 0.25
 UNIVERSE_NUDGE_MODERATE = 0.50
+UNIVERSE_NUDGE_STRONG   = 0.80
+
+# Auto-correction thresholds
+# If a tier is below AUTO_CORRECT_LOW, pull programs up to hit AUTO_CORRECT_TARGET
+# If a tier is above AUTO_CORRECT_HIGH, push programs down to hit AUTO_CORRECT_TARGET
+AUTO_CORRECT_LOW    = 0.75   # below 75% triggers upward pull
+AUTO_CORRECT_HIGH   = 1.25   # above 125% triggers downward push
+AUTO_CORRECT_TARGET = 0.80   # correct to 80% of target
+
+# Blue blood identity pull -- programs above 95 get strong upward
+# resistance to decline. Programs in 85-94 feel a weaker upward
+# pull -- the "lurking" mechanic. One good season with high gravity
+# snaps a struggling blue blood back toward their rightful tier.
+BLUE_BLOOD_THRESHOLD    = 95
+BLUE_BLOOD_PULL_UP      = 0.40   # per season for programs above 95
+LURKING_THRESHOLD       = 85
+LURKING_PULL_UP         = 0.15   # per season for programs 85-94
+
+# Blue blood throne -- maximum seats at the table
+BLUE_BLOOD_MAX_SEATS    = 4
+
+# Tenure tiers -- consecutive blue blood seasons before gravity is protected
+# (seasons_threshold, label, gravity_protection_pct)
+# protection_pct = how much gravity erosion is blocked
+#   0.95 = dynasty tier, anchor barely moves even through sustained losing
+#   0.00 = newcomer, no protection
+BLUE_BLOOD_TENURE_TIERS = [
+    (30, "dynasty",     0.95),
+    (16, "entrenched",  0.70),
+    (6,  "established", 0.40),
+    (0,  "newcomer",    0.00),
+]
+
+# Throne check push -- how hard the most vulnerable blue blood
+# gets pushed down when the tier is overcrowded
+# Overcrowded by 1: mild shove
+# Overcrowded by 2: moderate push
+# Overcrowded by 3+: hard push
+THRONE_PUSH    = {1: -1.5, 2: -2.5}
+THRONE_PUSH_MAX = -4.0
 
 # Gravity drift annual cap by conference tier.
 # Low major anchors are nearly geological -- a MEAC dynasty earns
@@ -83,6 +134,363 @@ GRAVITY_DRIFT_CAP = {
     "floor_conf": 0.10,
 }
 _DEFAULT_DRIFT_CAP = 0.25
+
+# Conference identity pull -- active force toward conference floor.
+# This is NOT a floor stop. It's gravity toward the conference's
+# natural identity range, firing every season regardless of performance.
+# Only floor_conf and low_major feel this force.
+# Strength varies by where the program finished in their conference.
+#
+# floor_conf (SWAC/MEAC/NEC/WAC):
+#   bottom third:  prestige pull -1.5/season, anchor erode -0.3/season
+#   middle third:  prestige pull -0.8/season
+#   top third:     prestige pull -0.2/season  (gravity never sleeps)
+#
+# low_major (Big South/Patriot/Southland/America East):
+#   bottom third:  prestige pull -0.6/season, anchor erode -0.1/season
+#   middle third:  prestige pull -0.3/season
+#   top third:     prestige pull -0.1/season
+IDENTITY_PULL = {
+    "floor_conf": {
+        "bottom": {"prestige": -1.5, "anchor": -0.3},
+        "middle": {"prestige": -0.8, "anchor":  0.0},
+        "top":    {"prestige": -0.2, "anchor":  0.0},
+    },
+    "low_major": {
+        "bottom": {"prestige": -0.6, "anchor": -0.1},
+        "middle": {"prestige": -0.3, "anchor":  0.0},
+        "top":    {"prestige": -0.1, "anchor":  0.0},
+    },
+}
+
+
+# -----------------------------------------
+# BLUE BLOOD STATE
+# -----------------------------------------
+
+def _init_blue_blood_state(program):
+    """Initialize blue_blood_state if not present."""
+    if "blue_blood_state" not in program:
+        program["blue_blood_state"] = {
+            "seasons":           0,
+            "legacy_credit":     0,
+            "siege_count":       0,      # times pushed to the gate (94.9)
+            "is_blue_blood":     False,
+            "ever_blue_blood":   False,
+            "tenure_tier":       "newcomer",
+            "gravity_protected": False,
+            "protection_pct":    0.0,
+        }
+    elif "siege_count" not in program["blue_blood_state"]:
+        program["blue_blood_state"]["siege_count"] = 0
+    elif "protection_pct" not in program["blue_blood_state"]:
+        program["blue_blood_state"]["protection_pct"] = 0.0
+    return program["blue_blood_state"]
+
+
+def _get_tenure_tier(seasons):
+    """Returns tenure label and gravity protection pct for given seasons."""
+    for threshold, label, protection in BLUE_BLOOD_TENURE_TIERS:
+        if seasons >= threshold:
+            return label, protection
+    return "newcomer", 0.0
+
+
+def update_blue_blood_state(program):
+    """
+    Called each season after prestige pipeline.
+    Tracks blue blood tenure and applies gravity protection.
+
+    If a program falls out of blue blood territory:
+      - seasons halved (legacy credit retained)
+      - is_blue_blood set to False
+      - gravity protection removed
+
+    Gravity protection works by reducing how much the anchor
+    can erode in a given season. A dynasty-tier blue blood's
+    anchor barely moves even through years of losing -- the
+    institutional weight of 30+ years of dominance.
+    """
+    state   = _init_blue_blood_state(program)
+    current = program["prestige_current"]
+
+    if current >= BLUE_BLOOD_THRESHOLD:
+        # Entered or held blue blood status
+        state["seasons"]       += 1
+        state["is_blue_blood"]  = True
+        state["ever_blue_blood"] = True
+    else:
+        # Fallen out
+        if state["is_blue_blood"]:
+            # Just fell out -- halve seasons, retain as legacy credit
+            state["legacy_credit"] = state["seasons"] // 2
+            state["seasons"]       = state["legacy_credit"]
+        state["is_blue_blood"]  = False
+
+    label, protection = _get_tenure_tier(state["seasons"])
+    state["tenure_tier"]       = label
+    state["gravity_protected"] = protection > 0
+
+    # Apply gravity protection -- reduce anchor erosion proportionally
+    # This is subtle: we don't directly change gravity here.
+    # Instead we store the protection pct so apply_gravity_drift()
+    # can use it to dampen downward drift.
+    state["protection_pct"] = protection
+
+    return program
+
+
+def run_blue_blood_throne_check(all_programs, season_year, verbose=False):
+    """
+    The throne check. Hard cap: NEVER more than 4 blue bloods.
+
+    If more than 4 programs are above 95, the most vulnerable are
+    placed at exactly 94.9 -- just outside the gate. Not destroyed,
+    just held back. They have to earn their way back in next season.
+
+    SIEGE MECHANIC:
+    Each time a program is placed at 94.9, their siege_count increments.
+    Each siege attempt nudges their prestige_gravity upward slightly --
+    the institution is building legitimacy through repeated challenges.
+    After 6+ sieges, the program applies extra downward pressure on
+    the weakest incumbent blue blood every season they sit at 94.9.
+    This is how the barbarians eventually breach the gate.
+
+    VULNERABILITY RANKING (most vulnerable = pushed out first):
+      1. Lowest siege_count -- challengers go before veterans
+      2. Lowest blue_blood_state.seasons -- newcomers before legacy
+      3. Lowest prestige_gravity -- pretenders before true blue bloods
+      4. Lowest prestige_current -- weakest form as final tiebreaker
+
+    SIEGE PRESSURE ON INCUMBENTS:
+    Programs sitting at 94.9 with siege_count >= 6 apply -0.15/season
+    to the weakest incumbent's prestige_current. Multiple siegers
+    stack. A coordinated siege from 3 programs = -0.45/season on
+    the weakest blue blood -- eventually forcing them below 95.
+
+    The absolute cap is enforced AFTER siege pressure, so if siege
+    pressure drops an incumbent below 95 it opens a seat for the
+    strongest challenger to claim.
+    """
+    # --- SIEGE PRESSURE ON INCUMBENTS ---
+    # Programs sitting just outside the gate (94.5-94.9) with
+    # high siege counts apply pressure to the weakest blue blood
+    siegers = [p for p in all_programs
+               if 94.5 <= p["prestige_current"] <= 94.95]
+
+    blue_bloods = [p for p in all_programs
+                   if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD]
+
+    if blue_bloods and siegers:
+        # Find the most vulnerable incumbent
+        def incumbent_vulnerability(p):
+            state = p.get("blue_blood_state", {})
+            return (state.get("seasons", 0) * 10) + p["prestige_gravity"]
+
+        weakest = min(blue_bloods, key=incumbent_vulnerability)
+
+        total_siege_pressure = 0.0
+        for sieger in siegers:
+            siege_state = sieger.get("blue_blood_state", {})
+            siege_count = siege_state.get("siege_count", 0)
+            if siege_count >= 6:
+                total_siege_pressure -= 0.15
+
+        if total_siege_pressure < 0:
+            weakest_state = weakest.get("blue_blood_state", {})
+            protection    = weakest_state.get("protection_pct", 0.0)
+            effective_pressure = total_siege_pressure * (1.0 - protection)
+            new_prestige = max(1, weakest["prestige_current"] + effective_pressure)
+            weakest["prestige_current"] = round(new_prestige, 1)
+            weakest["prestige_grade"]   = prestige_grade(weakest["prestige_current"])
+
+            if verbose and effective_pressure < 0:
+                print("  SIEGE PRESSURE: " + weakest["name"] +
+                      " pressured to " + str(weakest["prestige_current"]) +
+                      " by " + str(len([s for s in siegers
+                          if s.get("blue_blood_state", {}).get("siege_count", 0) >= 6])) +
+                      " siege(s)")
+
+    # --- HARD CAP ENFORCEMENT ---
+    # Recount after siege pressure (a blue blood may have fallen below 95)
+    blue_bloods = [p for p in all_programs
+                   if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD]
+
+    overcrowded = len(blue_bloods) - BLUE_BLOOD_MAX_SEATS
+
+    if overcrowded <= 0:
+        return all_programs
+
+    # Rank by vulnerability -- most vulnerable first
+    def vulnerability_score(p):
+        state       = p.get("blue_blood_state", {})
+        seasons     = state.get("seasons", 0)
+        siege_count = state.get("siege_count", 0)
+        gravity     = p["prestige_gravity"]
+        current     = p["prestige_current"]
+        # Lower score = more vulnerable
+        # Siege count included -- a program that just stormed in
+        # is more vulnerable than a long-siege program
+        return (seasons * 10) + (siege_count * 2) + gravity + (current / 10)
+
+    ranked = sorted(blue_bloods, key=vulnerability_score)
+
+    # Hard cap -- push exactly to 94.9, no gradual nudge
+    for i in range(overcrowded):
+        if i >= len(ranked):
+            break
+
+        target = ranked[i]
+        state  = _init_blue_blood_state(target)
+        protection = state.get("protection_pct", 0.0)
+
+        # Dynasty programs can resist being placed at the gate
+        # but NEVER stay above 95 if there are more than 4
+        # The gate is absolute -- protection just determines
+        # how close to 95 they land (94.9 vs 93-94)
+        if protection >= 0.95:
+            # True dynasty -- nudged just below gate
+            gate_position = 94.9
+        elif protection >= 0.70:
+            # Entrenched -- pushed slightly further back
+            gate_position = 94.5
+        elif protection >= 0.40:
+            # Established -- pushed back meaningfully
+            gate_position = 94.0
+        else:
+            # Newcomer or low-siege -- pushed to standard gate
+            gate_position = 94.9
+
+        target["prestige_current"] = gate_position
+        target["prestige_grade"]   = prestige_grade(target["prestige_current"])
+
+        # Increment siege count -- each confrontation builds legitimacy
+        state["siege_count"] = state.get("siege_count", 0) + 1
+
+        # Gravity nudge -- each siege attempt makes you more legitimate
+        # Capped at a modest amount -- you still have to earn it on the court
+        siege_gravity_bonus = min(0.3, state["siege_count"] * 0.05)
+        new_gravity = min(100, target["prestige_gravity"] + siege_gravity_bonus)
+        target["prestige_gravity"] = round(new_gravity, 1)
+
+        if verbose:
+            print("  THRONE: " + target["name"] +
+                  " held at gate " + str(gate_position) +
+                  " (tenure: " + str(state.get("seasons", 0)) +
+                  " seasons, siege #" + str(state["siege_count"]) +
+                  ", protection: " + str(round(protection * 100)) + "%)")
+
+    # Final verification -- absolute guarantee
+    for p in all_programs:
+        if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD:
+            pass  # counted below
+
+    final_count = sum(1 for p in all_programs
+                      if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD)
+    if final_count > BLUE_BLOOD_MAX_SEATS:
+        # Emergency fallback -- should never reach here but just in case
+        overflow = sorted(
+            [p for p in all_programs if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD],
+            key=vulnerability_score
+        )
+        for p in overflow[:final_count - BLUE_BLOOD_MAX_SEATS]:
+            p["prestige_current"] = 94.9
+            p["prestige_grade"]   = prestige_grade(94.9)
+
+    return all_programs
+
+
+# -----------------------------------------
+# CONFERENCE IDENTITY PULL
+# -----------------------------------------
+
+def apply_conference_identity_pull(program, conf_finish_percentile):
+    """
+    Active gravity toward conference floor. Fires every season.
+    Only affects floor_conf and low_major programs.
+
+    Also handles blue blood upward resistance and lurking pull
+    for programs in the 85-94 range.
+    """
+    from programs_data import get_conference_tier
+
+    current  = program["prestige_current"]
+    gravity  = program["prestige_gravity"]
+
+    # --- BLUE BLOOD UPWARD RESISTANCE ---
+    # Programs above 95: strong pull back up if they've fallen below
+    # Programs in 85-94: weaker pull upward -- the "lurking" mechanic
+    # This fires regardless of conference tier.
+    if gravity >= BLUE_BLOOD_THRESHOLD:
+        if current < BLUE_BLOOD_THRESHOLD:
+            # Fallen blue blood -- gravity fights hard to restore them
+            gap  = BLUE_BLOOD_THRESHOLD - current
+            pull = min(BLUE_BLOOD_PULL_UP, gap * 0.08)
+            program["prestige_current"] = round(min(100, current + pull), 1)
+            program["prestige_grade"]   = prestige_grade(program["prestige_current"])
+        return program
+
+    if gravity >= LURKING_THRESHOLD:
+        if current < gravity:
+            # Lurking program below their gravity -- nudge upward
+            gap  = gravity - current
+            pull = min(LURKING_PULL_UP, gap * 0.03)
+            program["prestige_current"] = round(min(100, current + pull), 1)
+            program["prestige_grade"]   = prestige_grade(program["prestige_current"])
+        return program
+
+    # --- CONFERENCE IDENTITY PULL (floor_conf and low_major only) ---
+    tier_obj = get_conference_tier(program["conference"])
+    tier     = tier_obj["tier"]
+    floor    = tier_obj["floor"]
+
+    if tier not in IDENTITY_PULL:
+        return program
+
+    pull_table = IDENTITY_PULL[tier]
+
+    if conf_finish_percentile < 0.33:
+        pull = pull_table["bottom"]
+    elif conf_finish_percentile < 0.67:
+        pull = pull_table["middle"]
+    else:
+        pull = pull_table["top"]
+
+    new_prestige = max(1, current + pull["prestige"])
+    program["prestige_current"] = round(new_prestige, 1)
+    program["prestige_grade"]   = prestige_grade(program["prestige_current"])
+
+    if pull["anchor"] < 0:
+        new_gravity = max(1, gravity + pull["anchor"])
+        program["prestige_gravity"] = round(new_gravity, 1)
+
+    return program
+
+
+# -----------------------------------------
+# CONFERENCE FINISH TRACKING
+# -----------------------------------------
+
+def calculate_conference_standings(conference_programs):
+    """
+    Calculates finish percentile for every program in the conference.
+    1.0 = first place, 0.0 = last place.
+    Stored on program as conf_finish_percentile.
+    """
+    n = len(conference_programs)
+    if n < 2:
+        for p in conference_programs:
+            p["conf_finish_percentile"] = 0.5
+        return
+
+    ranked = sorted(
+        conference_programs,
+        key=lambda p: (p["conf_wins"], p["wins"]),
+        reverse=True
+    )
+
+    for i, p in enumerate(ranked):
+        p["conf_finish_percentile"] = round(1.0 - (i / (n - 1)), 3)
 
 
 # -----------------------------------------
@@ -143,47 +551,114 @@ def build_non_conference_schedule(programs, all_programs, games_per_team=6):
 # GRAVITY DRIFT
 # -----------------------------------------
 
-def apply_gravity_drift(program, season_year, win_pct):
+def update_job_security(program, win_pct, conf_finish_percentile):
     """
-    Slowly adjusts gravity anchor based on rolling performance.
+    Updates job_security based on performance vs gravity expectations.
+    Blue bloods are less patient -- erode security faster when results disappoint.
+    Floor: 10. Ceiling: 100.
+    """
+    gravity          = program["prestige_gravity"]
+    security         = program.get("job_security", 75)
+    expected_pct     = 0.35 + (gravity / 100) * 0.45
+    gap              = win_pct - expected_pct
+    impatience_scale = 0.5 + (gravity / 100) * 1.0
 
-    v0.6: Annual drift cap is now tiered by conference tier.
-    A MEAC or SWAC program winning consistently earns a tiny
-    anchor nudge -- their identity is that conference. A power
-    conference program has more legitimate room to grow.
+    if gap > 0.10:
+        delta = 3.0 + (gap * 10)
+    elif gap > 0:
+        delta = 1.0
+    elif gap > -0.10:
+        delta = -2.0 * impatience_scale
+    else:
+        delta = (-4.0 - (abs(gap) * 15)) * impatience_scale
 
-    Caps by tier:
-      power:      +-0.50/season  (up to +-5.0 over a decade)
-      high_major: +-0.35/season  (up to +-3.5 over a decade)
-      mid_major:  +-0.25/season  (up to +-2.5 over a decade)
-      low_major:  +-0.15/season  (up to +-1.5 over a decade)
-      floor_conf: +-0.10/season  (up to +-1.0 over a decade)
+    if conf_finish_percentile < 0.50:
+        bottom_half_gap = 0.50 - conf_finish_percentile
+        delta -= bottom_half_gap * 4.0 * impatience_scale
+
+    new_security = max(10, min(100, security + delta))
+    program["job_security"] = round(new_security, 1)
+    return program
+
+
+def apply_gravity_drift(program, season_year, win_pct, conf_finish_percentile=0.5):
+    """
+    Momentum-based gravity anchor drift.
+    Performance signal: 70% conference finish + 30% overall win pct.
+    Momentum builds over consecutive seasons of consistent over/underperformance.
+    A single bad season resets upward momentum to zero.
     """
     from programs_data import get_conference_tier
+
+    if "drift_state" not in program:
+        program["drift_state"] = {
+            "consecutive_above":   0,
+            "consecutive_below":   0,
+            "last_direction":      "none",
+            "seasons_bottom_half": 0,
+        }
 
     if "performance_history" not in program:
         program["performance_history"] = []
 
-    program["performance_history"].append({"year": season_year, "win_pct": round(win_pct, 3)})
+    program["performance_history"].append({
+        "year":    season_year,
+        "win_pct": round(win_pct, 3),
+        "conf_finish_percentile": round(conf_finish_percentile, 3),
+    })
 
-    history = program["performance_history"]
-    if len(history) < 5:
+    if len(program["performance_history"]) < 3:
         return
 
-    window           = history[-10:]
-    avg_win_pct      = sum(s["win_pct"] for s in window) / len(window)
-    gravity          = program["prestige_gravity"]
-    expected_win_pct = 0.35 + (gravity / 100) * 0.45
-    performance_gap  = avg_win_pct - expected_win_pct
+    state      = program["drift_state"]
+    gravity    = program["prestige_gravity"]
+    tier_obj   = get_conference_tier(program["conference"])
+    tier       = tier_obj["tier"]
+    floor      = tier_obj["floor"]
+    annual_cap = GRAVITY_DRIFT_CAP.get(tier, _DEFAULT_DRIFT_CAP)
 
-    # Tier-aware annual cap -- low major anchors barely move
-    tier_name = get_conference_tier(program["conference"])["tier"]
-    annual_cap = GRAVITY_DRIFT_CAP.get(tier_name, _DEFAULT_DRIFT_CAP)
+    expected_win_pct     = 0.35 + (gravity / 100) * 0.45
+    expected_conf_finish = 0.35 + (gravity / 100) * 0.45
+    conf_gap             = conf_finish_percentile - expected_conf_finish
+    overall_gap          = win_pct - expected_win_pct
+    performance_gap      = (conf_gap * 0.70) + (overall_gap * 0.30)
 
-    gravity_delta = max(-annual_cap, min(annual_cap, performance_gap * 1.5))
+    if performance_gap > 0.05:
+        if state["last_direction"] == "up":
+            state["consecutive_above"] += 1
+        else:
+            state["consecutive_below"] = 0
+            state["consecutive_above"] = 1
+        state["last_direction"] = "up"
+        momentum = state["consecutive_above"]
+    elif performance_gap < -0.05:
+        if state["last_direction"] == "down":
+            state["consecutive_below"] += 1
+        else:
+            state["consecutive_above"] = 0
+            state["consecutive_below"] = 1
+        state["last_direction"] = "down"
+        momentum = state["consecutive_below"]
+    else:
+        state["last_direction"] = "none"
+        momentum = 0
 
-    floor       = get_conference_floor(program["conference"])
-    new_gravity = max(floor, min(100, gravity + gravity_delta))
+    if momentum == 0:
+        return
+
+    momentum_table = {1: 0.15, 2: 0.15, 3: 0.15,
+                      4: 0.40, 5: 0.40, 6: 0.40,
+                      7: 0.70, 8: 0.70, 9: 0.70}
+    momentum_mult  = momentum_table.get(momentum, 1.00)
+    coach_seasons  = program.get("coach_seasons", 0)
+    tenure_mult    = max(0.20, min(1.0, coach_seasons / 8.0))
+    security       = program.get("job_security", 75)
+    security_mod   = 0.5 + (security / 200.0)
+
+    raw_drift = performance_gap * 1.5 * momentum_mult * tenure_mult * security_mod
+    drift     = max(-annual_cap, min(annual_cap, raw_drift))
+
+    new_gravity = max(floor, min(100, gravity + drift))
     program["prestige_gravity"] = round(new_gravity, 1)
 
 
@@ -193,48 +668,100 @@ def apply_gravity_drift(program, season_year, win_pct):
 
 def apply_universe_gravity(all_programs):
     """
-    World-level population pressure toward bottom-heavy pyramid.
-    Subtle whisper -- +-0.15 or +-0.30 per season.
-    Conference floors always protected.
-    Called once per season AFTER all individual prestige updates.
+    World-level population auto-correction toward target distribution.
+    Blue blood tier is exempt -- throne check handles that separately.
+    Conference floors protected as hard stop on downward movement.
+
+    HARD AUTO-CORRECTION RULES (runs each season):
+
+    If a tier is below 75% of target:
+      Pull exactly enough programs up from the tier below to reach 80%.
+      Programs are selected by prestige descending (closest to boundary).
+      Placed at the tier minimum -- just enough to cross the line.
+      prestige_current only -- gravity anchor untouched.
+
+    If a tier is above 125% of target:
+      Push exactly enough programs down to the tier above to reach 110%.
+      Programs selected by prestige ascending (weakest in the tier).
+      Placed just below the tier minimum.
+      prestige_current only -- gravity anchor untouched.
+
+    Runs top-down so corrections cascade correctly:
+      elite corrected first, then strong, then average, etc.
+      This means a vacuum in elite pulls from strong, which may then
+      pull from average, which may then pull from below_average.
     """
-    tier_counts = {}
-    for tier_name, p_min, p_max, target in UNIVERSE_TIERS:
-        tier_counts[tier_name] = sum(
+    tier_list = list(UNIVERSE_TIERS)
+
+    # Top-down pass: correct each non-blue-blood tier
+    for i, (tier_name, p_min, p_max, target) in enumerate(tier_list):
+        if tier_name == "blue_blood":
+            continue
+
+        # Recount fresh each iteration -- prior corrections change counts
+        actual = sum(
             1 for p in all_programs
             if p_min <= p["prestige_current"] <= p_max
         )
+        fill_pct = actual / max(1, target)
 
-    tier_nudges = {}
-    for tier_name, p_min, p_max, target in UNIVERSE_TIERS:
-        actual       = tier_counts[tier_name]
-        overflow_pct = (actual - target) / max(1, target)
-        # v0.6: Thresholds tightened (20%/40% -> 15%/30%) and nudges
-        # strengthened (0.25/0.50) so mid/low tier overflow actually corrects.
-        if overflow_pct >= 0.30:
-            tier_nudges[tier_name] = -UNIVERSE_NUDGE_MODERATE
-        elif overflow_pct >= 0.15:
-            tier_nudges[tier_name] = -UNIVERSE_NUDGE_SMALL
-        elif overflow_pct <= -0.30:
-            tier_nudges[tier_name] = UNIVERSE_NUDGE_MODERATE
-        elif overflow_pct <= -0.15:
-            tier_nudges[tier_name] = UNIVERSE_NUDGE_SMALL
-        else:
-            tier_nudges[tier_name] = UNIVERSE_NUDGE_NONE
+        # --- UNDERPOPULATED: pull from tier below ---
+        if fill_pct < AUTO_CORRECT_LOW:
+            needed = int(target * AUTO_CORRECT_TARGET) - actual
+            if needed <= 0:
+                continue
 
-    for program in all_programs:
-        current = program["prestige_current"]
-        nudge   = 0.0
-        for tier_name, p_min, p_max, target in UNIVERSE_TIERS:
-            if p_min <= current <= p_max:
-                nudge = tier_nudges[tier_name]
-                break
-        if nudge == 0.0:
-            continue
-        floor        = get_conference_floor(program["conference"])
-        new_prestige = max(floor, min(100, current + nudge))
-        program["prestige_current"] = round(new_prestige, 1)
-        program["prestige_grade"]   = prestige_grade(program["prestige_current"])
+            # Find tier below
+            if i + 1 >= len(tier_list):
+                continue
+            _, below_min, below_max, _ = tier_list[i + 1]
+
+            # Get programs from tier below, sorted by prestige desc
+            candidates = sorted(
+                [p for p in all_programs
+                 if below_min <= p["prestige_current"] <= below_max],
+                key=lambda p: p["prestige_current"],
+                reverse=True
+            )
+
+            moved = 0
+            for program in candidates:
+                if moved >= needed:
+                    break
+                conf_floor = get_conference_floor(program["conference"])
+                # Place at tier minimum -- just enough to cross the line
+                new_prestige = max(conf_floor, p_min)
+                program["prestige_current"] = round(new_prestige, 1)
+                program["prestige_grade"]   = prestige_grade(program["prestige_current"])
+                moved += 1
+
+        # --- OVERCROWDED: push weakest down ---
+        elif fill_pct > AUTO_CORRECT_HIGH:
+            excess = actual - int(target * (AUTO_CORRECT_HIGH - 0.15))
+            if excess <= 0:
+                continue
+
+            # Get weakest programs in this tier
+            candidates = sorted(
+                [p for p in all_programs
+                 if p_min <= p["prestige_current"] <= p_max],
+                key=lambda p: p["prestige_current"]
+            )
+
+            moved = 0
+            for program in candidates:
+                if moved >= excess:
+                    break
+                conf_floor = get_conference_floor(program["conference"])
+                # Place just below tier minimum
+                new_prestige = max(conf_floor, p_min - 0.1)
+                if new_prestige < conf_floor:
+                    continue  # can't push below conference floor
+                program["prestige_current"] = round(new_prestige, 1)
+                program["prestige_grade"]   = prestige_grade(program["prestige_current"])
+                moved += 1
+
+    return all_programs
 
     return all_programs
 
@@ -331,14 +858,14 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
             record_game_result(away, home["name"], result["away"], result["home"],
                                is_home=False, is_conference=matchup["is_conference"])
 
+    # Calculate conference standings before prestige pipeline
+    calculate_conference_standings(conference_programs)
+
     for p in conference_programs:
         games   = p["wins"] + p["losses"]
         win_pct = p["wins"] / games if games > 0 else 0.0
+        conf_finish_percentile = p.get("conf_finish_percentile", 0.5)
 
-        # Cap games used for prestige calculation to a realistic D1 season.
-        # If a program somehow accumulated extra games (scheduling artifacts),
-        # we normalize to at most 36 games so inflated win totals cannot
-        # inflate prestige. We preserve the win percentage, not raw wins.
         PRESTIGE_GAME_CAP = 36
         if games > PRESTIGE_GAME_CAP:
             capped_wins   = round(win_pct * PRESTIGE_GAME_CAP)
@@ -350,18 +877,28 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
         made_tournament = p["conf_wins"] >= (len(conference_programs) // 2)
         tournament_wins = max(0, p["conf_wins"] - len(conference_programs) // 2)
 
-        # Prestige pipeline steps 1-4
+        # Prestige pipeline
         update_prestige_for_results(p, capped_wins, capped_losses, made_tournament, tournament_wins)
         apply_gravity_pull(p)
-        apply_gravity_drift(p, season_year, win_pct)
+        apply_gravity_drift(p, season_year, win_pct, conf_finish_percentile)
+        recalculate_gravity_pull_rate(p)
+        update_job_security(p, win_pct, conf_finish_percentile)
         apply_conference_tier_pressure(p)
+        apply_conference_identity_pull(p, conf_finish_percentile)
+        update_blue_blood_state(p)
 
         if "season_history" not in p:
             p["season_history"] = []
         p["season_history"].append({
-            "year": season_year, "wins": p["wins"], "losses": p["losses"],
-            "conf_wins": p["conf_wins"], "conf_losses": p["conf_losses"],
+            "year":       season_year,
+            "wins":       p["wins"],
+            "losses":     p["losses"],
+            "conf_wins":  p["conf_wins"],
+            "conf_losses": p["conf_losses"],
             "prestige_end": p["prestige_current"],
+            "gravity_end":  p["prestige_gravity"],
+            "conf_finish_percentile": conf_finish_percentile,
+            "job_security": p.get("job_security", 75),
         })
         p["coach_seasons"] += 1
 
@@ -419,6 +956,9 @@ def simulate_world_season(all_programs, season_year, verbose=True):
 
     # Step 4: Universe gravity
     apply_universe_gravity(all_programs)
+
+    # Step 4b: Blue blood throne check
+    run_blue_blood_throne_check(all_programs, season_year, verbose=verbose)
 
     if verbose:
         print("")
@@ -540,6 +1080,70 @@ def print_roster_evolution(program):
           " Sr:" + str(year_counts["Senior"]))
 
 
+def print_blue_blood_throne(all_programs, season_year):
+    """Shows current blue blood throne occupants, tenure, and siege activity."""
+    blue_bloods = sorted(
+        [p for p in all_programs if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD],
+        key=lambda p: p.get("blue_blood_state", {}).get("seasons", 0),
+        reverse=True
+    )
+    at_gate = sorted(
+        [p for p in all_programs
+         if 94.5 <= p["prestige_current"] < BLUE_BLOOD_THRESHOLD],
+        key=lambda p: p["prestige_current"],
+        reverse=True
+    )[:6]
+    lurking = sorted(
+        [p for p in all_programs
+         if LURKING_THRESHOLD <= p["prestige_current"] < 94.5],
+        key=lambda p: p["prestige_current"],
+        reverse=True
+    )[:4]
+
+    print("")
+    print("--- " + str(season_year) + " Blue Blood Throne (" +
+          str(len(blue_bloods)) + "/" + str(BLUE_BLOOD_MAX_SEATS) + " seats) ---")
+    print("  {:<24} {:<10} {:<10} {:<8} {:<8} {:<14} {}".format(
+        "Program", "Prestige", "Gravity", "Seasons", "Sieges", "Tenure", "Protected"))
+    print("  " + "-" * 80)
+    for p in blue_bloods:
+        state = p.get("blue_blood_state", {})
+        print("  {:<24} {:<10} {:<10} {:<8} {:<8} {:<14} {}".format(
+            p["name"],
+            str(p["prestige_current"]),
+            str(p["prestige_gravity"]),
+            str(state.get("seasons", 0)),
+            str(state.get("siege_count", 0)),
+            state.get("tenure_tier", "newcomer"),
+            "YES" if state.get("gravity_protected") else "no"
+        ))
+
+    if at_gate:
+        print("")
+        print("  At the gate (94.5-94.9) -- knocking:")
+        for p in at_gate:
+            state = p.get("blue_blood_state", {})
+            print("    {:<24} prestige: {:<8} gravity: {:<8} sieges: {:<4} ever_BB: {}".format(
+                p["name"],
+                str(p["prestige_current"]),
+                str(p["prestige_gravity"]),
+                str(state.get("siege_count", 0)),
+                "yes" if state.get("ever_blue_blood") else "no"
+            ))
+
+    if lurking:
+        print("")
+        print("  Lurking (85-94.4):")
+        for p in lurking:
+            state = p.get("blue_blood_state", {})
+            print("    {:<24} prestige: {:<8} gravity: {:<8} sieges: {}".format(
+                p["name"],
+                str(p["prestige_current"]),
+                str(p["prestige_gravity"]),
+                str(state.get("siege_count", 0))
+            ))
+
+
 # -----------------------------------------
 # TEST -- 10-season world simulation
 # -----------------------------------------
@@ -558,18 +1162,19 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    for year in range(2024, 2030):
+    for year in range(2024, 2045):
         all_programs, recruiting_class, cycle_summary, lifecycle_summary = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
         print_prestige_movers(all_programs, start_prestiges, year)
+        print_blue_blood_throne(all_programs, year)
         print_tier_snapshot(all_programs, year)
         print_ceiling_breakers(all_programs, year)
         start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
     print("")
     print("=" * 60)
-    print("  10-YEAR WORLD SIMULATION COMPLETE")
+    print("  21-SEASON WORLD SIMULATION COMPLETE")
     print("=" * 60)
 
     print("")
@@ -587,7 +1192,7 @@ if __name__ == "__main__":
     big_movers     = sum(1 for c in all_changes if c > 15)
 
     print("")
-    print("=== PRESTIGE STABILITY OVER 10 SEASONS ===")
+    print("=== PRESTIGE STABILITY OVER 21 SEASONS ===")
     print("  Avg absolute change:            " + str(round(avg_abs_change, 1)) + " points")
     print("  Max change (any program):       " + str(round(max_change, 1)) + " points")
     print("  Programs that moved 15+ points: " + str(big_movers) + " of " + str(len(all_programs)))

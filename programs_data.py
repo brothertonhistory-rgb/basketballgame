@@ -68,25 +68,71 @@ def get_conference_ceiling(conference):
     return CONFERENCE_TIERS.get(conference, _DEFAULT_TIER)["ceiling"]
 
 def calc_prestige(tourney, ff, titles, conference):
-    score = 10
-    if tourney <= 10:
-        score += tourney * 0.8
-    elif tourney <= 25:
-        score += 8 + (tourney - 10) * 0.5
-    else:
-        score += 15.5 + (tourney - 25) * 0.3
-    score += ff * 3.0
-    title_bonus = [0, 10, 17, 22, 26, 29, 31, 33, 35, 37, 39]
-    if titles < len(title_bonus):
-        score += title_bonus[titles]
-    else:
-        score += title_bonus[-1] + (titles - len(title_bonus) + 1) * 2
+    tier  = get_conference_tier(conference)["tier"]
     floor = get_conference_floor(conference)
-    return max(floor, min(97, round(score)))
+
+    # Tier-aware base score and tournament value.
+    # floor_conf programs start low -- ancient tournament appearances
+    # don't reflect current program strength in the SWAC/MEAC/NEC/WAC.
+    # low_major programs get a modest discount for the same reason.
+    if tier == "floor_conf":
+        score = 6
+        if tourney <= 10:
+            score += tourney * 0.4
+        else:
+            score += 4 + (tourney - 10) * 0.2
+        score += ff * 1.5
+        title_bonus = [0, 5, 8, 10]
+        if titles < len(title_bonus):
+            score += title_bonus[titles]
+        else:
+            score += title_bonus[-1]
+        return max(floor, min(20, round(score)))
+
+    elif tier == "low_major":
+        score = 8
+        if tourney <= 10:
+            score += tourney * 0.6
+        else:
+            score += 6 + (tourney - 10) * 0.3
+        score += ff * 2.0
+        title_bonus = [0, 8, 12, 15]
+        if titles < len(title_bonus):
+            score += title_bonus[titles]
+        else:
+            score += title_bonus[-1]
+        return max(floor, min(30, round(score)))
+
+    else:
+        # mid_major, high_major, power -- unchanged
+        score = 10
+        if tourney <= 10:
+            score += tourney * 0.8
+        elif tourney <= 25:
+            score += 8 + (tourney - 10) * 0.5
+        else:
+            score += 15.5 + (tourney - 25) * 0.3
+        score += ff * 3.0
+        title_bonus = [0, 10, 17, 22, 26, 29, 31, 33, 35, 37, 39]
+        if titles < len(title_bonus):
+            score += title_bonus[titles]
+        else:
+            score += title_bonus[-1] + (titles - len(title_bonus) + 1) * 2
+        return max(floor, min(97, round(score)))
+
 
 def get_gravity(prestige, conference):
-    floor = get_conference_floor(conference)
-    return max(floor, prestige - random.randint(2, 5))
+    floor = get_conference_tier(conference)["floor"]
+    tier  = get_conference_tier(conference)["tier"]
+
+    # floor_conf anchors sit close to the conference floor.
+    # These programs' historical identity IS being a bottom-tier program.
+    if tier == "floor_conf":
+        return max(floor, floor + random.randint(0, 3))
+    elif tier == "low_major":
+        return max(floor, prestige - random.randint(3, 7))
+    else:
+        return max(floor, prestige - random.randint(2, 5))
 
 def get_coach_name(school_name):
     return generate_coach_name()

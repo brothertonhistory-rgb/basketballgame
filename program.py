@@ -3,7 +3,7 @@ from player import generate_team, get_team_ratings
 from coach import generate_coach
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Program Database v0.5
+# COLLEGE HOOPS SIM -- Program Database v0.4
 # System 6 of the Design Bible
 #
 # v0.3 CHANGES -- Prestige Stability:
@@ -14,39 +14,19 @@ from coach import generate_coach
 #   conference_tier_state nested dict on every program.
 #   apply_conference_tier_pressure() enforces soft ceiling/floor.
 #
-# v0.5 CHANGES -- Gravity Pull Rate Overhaul:
+#   CEILING: programs above conf ceiling accumulate seasons_above_ceiling.
+#     1 season above: -0.3/yr drag
+#     2 seasons above: -0.6/yr drag
+#     3+ seasons above: -1.0/yr drag (snap-back)
+#     Power conferences (ceiling=100) EXEMPT.
 #
-#   OLD BEHAVIOR (wrong): Low anchor = weakest pull (0.03).
-#     This meant floor-tier programs that spiked up barely felt
-#     any force pulling them back down. A SWAC team that had a
-#     great season drifted upward and stayed there.
+#   FLOOR: programs below conf floor accumulate seasons_below_floor.
+#     1 season below: +0.2/yr lift
+#     2 seasons below: +0.4/yr lift
+#     3+ seasons below: +0.7/yr lift
+#     Conference floor is absolute hard stop.
 #
-#   NEW BEHAVIOR (correct): Low anchor = strongest pull.
-#     Rock bottom programs snap back hard if they spike up.
-#     Blue blood programs (high anchor) drift back slowly --
-#     they have institutional gravity that lets them coast
-#     through a few bad seasons before snapping back.
-#
-#   PULL RATE TABLE (by prestige_gravity):
-#     anchor < 20:  0.15  -- rock bottom, very strong snap-back
-#     anchor < 35:  0.10  -- floor tier, strong pull
-#     anchor < 50:  0.07  -- low major range
-#     anchor < 65:  0.05  -- mid major range
-#     anchor < 80:  0.04  -- high major range
-#     anchor >= 80: 0.03  -- blue blood, slow drift back
-#
-#   recalculate_gravity_pull_rate() is now called every season
-#   after apply_gravity_drift() so pull rate stays in sync
-#   with the anchor as it moves over time.
-#
-#   DESIGN NOTE: The pull rate acts on the gap between
-#   prestige_current and prestige_gravity. A floor program at
-#   prestige 8 that spikes to 25 has a gap of 17. With pull
-#   rate 0.15, that's -2.55 per season -- they fall back fast.
-#   A Duke at prestige 85 with gravity 90 has a gap of -5.
-#   With pull rate 0.03, that's +0.15 per season -- slow recovery,
-#   which is correct. Duke's AD hires a good coach long before
-#   gravity does all the work.
+#   Nested state is the pattern for ALL future system state.
 # -----------------------------------------
 
 DIVISIONS = ["D1", "D2", "D3", "JUCO"]
@@ -59,30 +39,10 @@ FLOOR_LIFT     = {1: 0.2, 2: 0.4}
 FLOOR_LIFT_MAX = 0.7
 
 
-def prestige_grade(score):
-    if score >= 95: return "A+"
-    if score >= 88: return "A"
-    if score >= 82: return "A-"
-    if score >= 76: return "B+"
-    if score >= 70: return "B"
-    if score >= 64: return "B-"
-    if score >= 58: return "C+"
-    if score >= 52: return "C"
-    if score >= 46: return "C-"
-    if score >= 40: return "D+"
-    if score >= 34: return "D"
-    if score >= 28: return "D-"
-    return "F"
-
-
 def _calc_gravity_pull_rate(prestige_gravity):
     """
     Inverted pull rate -- low anchor programs snap back hard.
     High anchor programs (blue bloods) drift back slowly.
-
-    This reflects reality: a SWAC team that has one good year
-    is still a SWAC team. Duke having three bad years is still Duke --
-    but the AD will act long before gravity does all the work.
     """
     if prestige_gravity < 20:  return 0.15
     if prestige_gravity < 35:  return 0.10
@@ -95,13 +55,30 @@ def _calc_gravity_pull_rate(prestige_gravity):
 def recalculate_gravity_pull_rate(program):
     """
     Updates gravity_pull_rate to match current prestige_gravity anchor.
-    Call this each season after apply_gravity_drift() so the pull rate
-    stays in sync as anchors move over a multi-decade simulation.
+    Call each season after apply_gravity_drift() so pull rate stays
+    in sync as anchors move over a multi-decade simulation.
     """
     program["gravity_pull_rate"] = _calc_gravity_pull_rate(
         program["prestige_gravity"]
     )
     return program
+
+
+def prestige_grade(score):
+    if score >= 95: return "BB"   # Blue Blood
+    if score >= 88: return "A+"
+    if score >= 82: return "A"
+    if score >= 76: return "A-"
+    if score >= 70: return "B+"
+    if score >= 64: return "B"
+    if score >= 58: return "B-"
+    if score >= 52: return "C+"
+    if score >= 46: return "C"
+    if score >= 40: return "C-"
+    if score >= 34: return "D+"
+    if score >= 28: return "D"
+    if score >= 22: return "D-"
+    return "F"
 
 
 def create_program(name, nickname, city, state, division, conference,
@@ -159,22 +136,87 @@ def apply_gravity_pull(program):
 
 
 def update_prestige_for_results(program, wins, losses, made_tournament, tournament_wins):
+    """
+    Updates prestige based on seasonal performance.
+
+    v0.5 CHANGE -- Tier-aware expected win pct and performance multiplier.
+    v0.6 CHANGE -- Tiered prestige cap. The ladder gets harder at both ends.
+
+    PRESTIGE CAP BY CURRENT PRESTIGE LEVEL:
+      1-20  (floor):        cap 1.5  -- slow climb at the bottom
+      21-38 (low_major):    cap 2.5
+      39-58 (mid_major):    cap 4.0  -- fastest movement, most room to express
+      59-78 (high_major):   cap 3.0
+      79-88 (elite lower):  cap 2.0
+      89-94 (elite upper):  cap 1.2  -- grind to threaten blue blood
+      95+   (blue blood):   cap 0.6  -- barely moves once there
+
+    CONFERENCE TIER determines expected win pct and performance multiplier.
+    """
+    from programs_data import get_conference_tier
+    tier    = get_conference_tier(program["conference"])["tier"]
     current = program["prestige_current"]
-    games   = wins + losses
+
+    # Tiered season prestige cap -- harder at the top, more movement in the middle
+    # Bottom tiers get reasonable movement -- the identity pull handles keeping
+    # them down, not the cap. Cap is primarily to slow the elite/blue blood climb.
+    if current >= 95:
+        season_cap = 0.6
+    elif current >= 89:
+        season_cap = 1.2
+    elif current >= 79:
+        season_cap = 2.0
+    elif current >= 59:
+        season_cap = 3.0
+    elif current >= 39:
+        season_cap = 4.0
+    elif current >= 21:
+        season_cap = 3.5
+    else:
+        season_cap = 2.5
+
+    # Tier-aware expected win pct and multiplier
+    if tier == "floor_conf":
+        expected_base   = 0.50
+        expected_scale  = 0.30
+        perf_multiplier = 1.0
+        tourn_qualify   = 0.1
+        tourn_win       = 0.2
+    elif tier == "low_major":
+        expected_base   = 0.45
+        expected_scale  = 0.35
+        perf_multiplier = 1.5
+        tourn_qualify   = 0.2
+        tourn_win       = 0.4
+    elif tier == "mid_major":
+        expected_base   = 0.40
+        expected_scale  = 0.40
+        perf_multiplier = 2.0
+        tourn_qualify   = 0.3
+        tourn_win       = 0.5
+    else:
+        # high_major and power
+        expected_base   = 0.35
+        expected_scale  = 0.45
+        perf_multiplier = PERFORMANCE_MULTIPLIER
+        tourn_qualify   = 0.5
+        tourn_win       = 0.75
+
+    games = wins + losses
+
     if games > 0:
         win_pct           = wins / games
-        expected_win_pct  = 0.35 + (current / 100) * 0.45
-        performance_delta = (win_pct - expected_win_pct) * PERFORMANCE_MULTIPLIER
+        expected_win_pct  = expected_base + (current / 100) * expected_scale
+        performance_delta = (win_pct - expected_win_pct) * perf_multiplier
     else:
         performance_delta = 0
 
     tournament_bonus = 0
     if made_tournament:
-        tournament_bonus += 0.5
-        tournament_bonus += tournament_wins * 0.75
+        tournament_bonus += tourn_qualify
+        tournament_bonus += tournament_wins * tourn_win
 
-    total_delta = max(-SEASON_PRESTIGE_CAP, min(SEASON_PRESTIGE_CAP,
-                      performance_delta + tournament_bonus))
+    total_delta  = max(-season_cap, min(season_cap, performance_delta + tournament_bonus))
     new_prestige = max(1, min(100, current + total_delta))
     program["prestige_current"] = round(new_prestige, 1)
     program["prestige_grade"]   = prestige_grade(program["prestige_current"])
@@ -258,8 +300,7 @@ def print_program_summary(program):
     print("\n=== " + program["name"] + " " + program["nickname"] + " ===")
     print("Conference:  " + program["conference"])
     print("Prestige:    " + str(program["prestige_current"]) + " (" + program["prestige_grade"] + ")")
-    print("Gravity:     " + str(program["prestige_gravity"]) +
-          "  pull_rate: " + str(program["gravity_pull_rate"]))
+    print("Gravity:     " + str(program["prestige_gravity"]))
     print("Conf limits: ceiling=" + str(get_conference_ceiling(program["conference"])) +
           "  floor=" + str(get_conference_floor(program["conference"])) +
           "  seasons_above=" + str(state.get("seasons_above_ceiling", 0)) +
@@ -278,50 +319,12 @@ def build_sample_programs():
 
 if __name__ == "__main__":
     programs = build_sample_programs()
-
-    print("=== PULL RATE VERIFICATION ===")
-    print("Confirming inverted pull rates at world-build:")
-    print("")
     for p in programs:
-        print("  {:<20} gravity: {:>4}  pull_rate: {}".format(
-            p["name"], p["prestige_gravity"], p["gravity_pull_rate"]))
+        print_program_summary(p)
 
-    print("")
-    print("=== SNAP-BACK TEST ===")
-    print("SWAC team (gravity=18) spikes to 35 -- how fast do they fall?")
-    print("")
-    swac = programs[3]
-    swac["prestige_current"] = 35
-    swac["prestige_gravity"] = 18
-    print("  {:<10} {:<10} {:<10}".format("Season", "Prestige", "Pull Rate"))
-    print("  " + "-" * 30)
-    for yr in range(1, 8):
-        apply_gravity_pull(swac)
-        recalculate_gravity_pull_rate(swac)
-        print("  {:<10} {:<10} {:<10}".format(
-            "Year " + str(yr),
-            str(swac["prestige_current"]),
-            str(swac["gravity_pull_rate"])))
-
-    print("")
-    print("=== BLUE BLOOD COAST TEST ===")
-    print("Kentucky (gravity=90) drops to 70 -- how slowly do they recover?")
-    print("")
-    ky = programs[0]
-    ky["prestige_current"] = 70
-    ky["prestige_gravity"] = 90
-    print("  {:<10} {:<10} {:<10}".format("Season", "Prestige", "Pull Rate"))
-    print("  " + "-" * 30)
-    for yr in range(1, 8):
-        apply_gravity_pull(ky)
-        recalculate_gravity_pull_rate(ky)
-        print("  {:<10} {:<10} {:<10}".format(
-            "Year " + str(yr),
-            str(ky["prestige_current"]),
-            str(ky["gravity_pull_rate"])))
-
-    print("")
-    print("=== CONFERENCE TIER PRESSURE TESTS ===")
+    print("\n" + "="*60)
+    print("  CONFERENCE TIER PRESSURE TESTS")
+    print("="*60)
 
     print("\n--- SWAC Dynasty (ceiling=40): 10 dominant seasons ---")
     swac = programs[3]
@@ -332,12 +335,41 @@ if __name__ == "__main__":
     for yr in range(1, 11):
         update_prestige_for_results(swac, 26, 4, True, 2)
         apply_gravity_pull(swac)
-        recalculate_gravity_pull_rate(swac)
         apply_conference_tier_pressure(swac)
         state = swac["conference_tier_state"]
         print("  {:<10} {:<10} {:<8} {:<8}".format(
             "Year "+str(yr), str(swac["prestige_current"]),
             swac["prestige_grade"], str(state["seasons_above_ceiling"])))
+
+    print("\n--- WCC Ceiling (Gonzaga, ceiling=85): 10 dominant seasons ---")
+    gonz = programs[1]
+    gonz["prestige_current"] = 78
+    gonz["prestige_gravity"] = 72
+    print("  {:<10} {:<10} {:<8} {:<8}".format("Season","Prestige","Grade","Above"))
+    print("  " + "-"*36)
+    for yr in range(1, 11):
+        update_prestige_for_results(gonz, 28, 6, True, 2)
+        apply_gravity_pull(gonz)
+        apply_conference_tier_pressure(gonz)
+        state = gonz["conference_tier_state"]
+        print("  {:<10} {:<10} {:<8} {:<8}".format(
+            "Year "+str(yr), str(gonz["prestige_current"]),
+            gonz["prestige_grade"], str(state["seasons_above_ceiling"])))
+
+    print("\n--- MVC Floor (Drake, floor=20): 10 terrible seasons ---")
+    drake = programs[2]
+    drake["prestige_current"] = 54
+    drake["prestige_gravity"] = 52
+    print("  {:<10} {:<10} {:<8} {:<8}".format("Season","Prestige","Grade","Below"))
+    print("  " + "-"*36)
+    for yr in range(1, 11):
+        update_prestige_for_results(drake, 6, 26, False, 0)
+        apply_gravity_pull(drake)
+        apply_conference_tier_pressure(drake)
+        state = drake["conference_tier_state"]
+        print("  {:<10} {:<10} {:<8} {:<8}".format(
+            "Year "+str(yr), str(drake["prestige_current"]),
+            drake["prestige_grade"], str(state["seasons_below_floor"])))
 
     print("\n--- Power conference: No ceiling (Kentucky/SEC) ---")
     ky = programs[0]
@@ -348,7 +380,6 @@ if __name__ == "__main__":
     for yr in range(1, 11):
         update_prestige_for_results(ky, 32, 4, True, 4)
         apply_gravity_pull(ky)
-        recalculate_gravity_pull_rate(ky)
         apply_conference_tier_pressure(ky)
         print("  {:<10} {:<10} {:<8}".format(
             "Year "+str(yr), str(ky["prestige_current"]), ky["prestige_grade"]))
