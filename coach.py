@@ -1,5 +1,5 @@
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Coaching Philosophy v0.2
+# COLLEGE HOOPS SIM -- Coaching Philosophy v0.3
 #
 # A coach has five layers:
 #
@@ -68,6 +68,10 @@
 #        values_athleticism, values_iq, values_size,
 #        values_shooting, values_defense, values_toughness,
 #        values_role_players
+#
+# v0.3 CHANGES:
+#   - _generate_competence() bonus now capped at 3 (was uncapped, causing
+#     multiple coaches to max out at 20/20 at elite programs)
 # -----------------------------------------
 
 import random
@@ -320,7 +324,6 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
 
     # --- ROTATION SIZE ---
     # Base: driven by pace. Fast pace = more players needed.
-    # Bias: archetype preference. Variance: personal style.
     pace_driven   = 7 + int((philosophy["pace"] / 100) * 3)   # 7-10 range from pace
     bias          = t["rotation_size_bias"]
     rotation_size = max(6, min(11,
@@ -328,31 +331,24 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
     ))
 
     # --- SLOT STRICTNESS ---
-    # How specific he is about what each depth piece needs to do
     slot_base       = 5 + t["slot_strictness_bias"]
     slot_strictness = max(1, min(10, slot_base + random.randint(-2, 2)))
 
     # --- ROTATION FLEXIBILITY ---
-    # 1 = rigid, plays his 8, strict minute blocks, ignores hot streaks
-    # 10 = reactive, rides hot hands, goes deep when trailing, unpredictable
-    # Correlated loosely with in_game_adaptability but distinct --
-    # a coach can read the game well but still refuse to break his rotation
+    # 1 = rigid, plays his 8, strict minute blocks
+    # 10 = reactive, rides hot hands, goes deep when trailing
     flex_base            = t.get("rotation_flexibility_bias", 5)
     rotation_flexibility = max(1, min(10, flex_base + random.randint(-2, 2)))
 
     # --- ROSTER VALUES ---
     roster_values = _generate_roster_values(archetype, philosophy)
 
-    # --- ADAPTABILITY ---
-    # in_game: reacts mid-game. scheme: reshapes between seasons.
-    # Both already in competence but kept separate for clarity in game logic.
-
     coach = {
         # --- IDENTITY ---
         "name":       name,
         "archetype":  archetype,
         "experience": experience,
-        "legacy":     0,            # seasons running current system
+        "legacy":     0,
 
         # --- PHILOSOPHY SLIDERS ---
         "pace":           philosophy["pace"],
@@ -379,9 +375,9 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
         "roster_fit":            competence["roster_fit"],
 
         # --- ROSTER CONSTRUCTION ---
-        "rotation_size":        rotation_size,        # 6-11
-        "slot_strictness":      slot_strictness,      # 1-10
-        "rotation_flexibility": rotation_flexibility, # 1-10
+        "rotation_size":        rotation_size,
+        "slot_strictness":      slot_strictness,
+        "rotation_flexibility": rotation_flexibility,
 
         # --- ROSTER VALUES (1-10) ---
         "values_athleticism":  roster_values["athleticism"],
@@ -409,10 +405,18 @@ def _generate_competence(template, exp_bonus, prestige_bonus):
     """
     Generates competence ratings 1-20.
     Each archetype has baseline tendencies.
-    Experience and prestige raise the ceiling.
+    Experience and prestige raise the ceiling slightly.
     Noise ensures no two coaches are identical.
+
+    v0.3: Total bonus capped at 3 to prevent elite-program coaches
+    from systematically maxing out multiple ratings at 20/20.
+    Archetype bases for elite archetypes are already 15-17; adding
+    a full 7-point bonus was causing most power-conference coaches
+    to hit the ceiling on their primary competencies.
     """
-    bonus = exp_bonus + prestige_bonus
+    # Cap total bonus at 3 -- prestige attracts better coaches but
+    # doesn't guarantee a roster full of maxed-out ratings
+    bonus = min(3, exp_bonus + prestige_bonus)
 
     ratings = {}
     competence_keys = [
@@ -532,9 +536,6 @@ def calculate_style_fit(player, coach):
     return max(0, min(100, int(raw)))
 
 
-
-
-
 # -----------------------------------------
 # DISPLAY
 # -----------------------------------------
@@ -567,7 +568,7 @@ def print_coach_profile(coach, show_archetype=False):
            else "(balanced)"))
 
     print("")
-    print("  ── OFFENSE ──────────────────────────────────────────")
+    print("  -- OFFENSE --")
     print("  Pace            slow  " + bar(coach["pace"]) + "  fast")
     print("  Shot Profile    mid   " + bar(coach["shot_profile"]) + "  rim&3")
     print("  Ball Movement   iso   " + bar(coach["ball_movement"]) + "  motion")
@@ -576,7 +577,7 @@ def print_coach_profile(coach, show_archetype=False):
     print("  Off Rebounding  get back " + bar(coach["off_rebounding"]) + "  crash")
 
     print("")
-    print("  ── DEFENSE ──────────────────────────────────────────")
+    print("  -- DEFENSE --")
     print("  Pressure        set   " + bar(coach["pressure"]) + "  press")
     print("  Philosophy      contain " + bar(coach["philosophy"]) + "  gamble")
     print("  Def Rebounding  leak  " + bar(coach["def_rebounding"]) + "  crash")
@@ -584,11 +585,11 @@ def print_coach_profile(coach, show_archetype=False):
     print("  Zone Tendency   man   " + bar(coach["zone_tendency"]) + "  zone")
 
     print("")
-    print("  ── LATE GAME ─────────────────────────────────────────")
+    print("  -- LATE GAME --")
     print("  Late Game       sets  " + bar(coach["late_game"]) + "  star iso")
 
     print("")
-    print("  ── COMPETENCE ───────────────────────────────────────")
+    print("  -- COMPETENCE --")
     print("  Offensive Skill:       " + stars(coach["offensive_skill"]))
     print("  Defensive Skill:       " + stars(coach["defensive_skill"]))
     print("  Player Development:    " + stars(coach["player_development"]))
@@ -599,7 +600,7 @@ def print_coach_profile(coach, show_archetype=False):
     print("  Roster Fit:            " + stars(coach["roster_fit"]))
 
     print("")
-    print("  ── ROSTER VALUES ────────────────────────────────────")
+    print("  -- ROSTER VALUES --")
     print("  What he recruits for:")
     print("  Athleticism: " + str(coach["values_athleticism"]) +
           "  IQ: "          + str(coach["values_iq"]) +
@@ -619,7 +620,7 @@ if __name__ == "__main__":
     from player import create_player
 
     print("=" * 65)
-    print("  COACH GENERATION TEST -- v0.2")
+    print("  COACH GENERATION TEST -- v0.3")
     print("=" * 65)
 
     coaches = [
@@ -636,7 +637,26 @@ if __name__ == "__main__":
     for coach in coaches:
         print_coach_profile(coach, show_archetype=True)
 
-    # --- ROTATION SIZE VERIFICATION ---
+    # --- COMPETENCE CEILING VERIFICATION ---
+    # After the v0.3 fix, elite coaches should NOT routinely hit 20/20
+    print("")
+    print("=" * 65)
+    print("  COMPETENCE CEILING VERIFICATION -- 50 elite program coaches")
+    print("  (should see very few 20/20 ratings after v0.3 fix)")
+    print("=" * 65)
+    maxed_count = 0
+    total_ratings = 0
+    for i in range(50):
+        c = generate_coach("Coach " + str(i+1), prestige=90, experience=25)
+        for key in ["offensive_skill", "defensive_skill", "recruiting_attraction", "roster_fit"]:
+            total_ratings += 1
+            if c[key] == 20:
+                maxed_count += 1
+    print("  Ratings at 20/20: " + str(maxed_count) + " of " + str(total_ratings) +
+          " (" + str(round(maxed_count / total_ratings * 100, 1)) + "%)")
+    print("  (healthy range: under 5%)")
+
+    # --- ROTATION SIZE vs PACE ---
     print("")
     print("=" * 65)
     print("  ROTATION SIZE vs PACE VERIFICATION")
@@ -646,23 +666,6 @@ if __name__ == "__main__":
     for coach in coaches:
         print("  {:<22} {:<8} {:<10}".format(
             coach["name"], str(coach["pace"]), str(coach["rotation_size"]) + " players"
-        ))
-
-    # --- VARIANCE TEST ---
-    print("")
-    print("=" * 65)
-    print("  RANDOM COACH VARIANCE -- 10 coaches")
-    print("=" * 65)
-    print("  {:<22} {:<20} {:<6} {:<6} {:<8} {:<8}".format(
-        "Name", "Archetype", "Pace", "Rot", "Off", "Def"))
-    print("  " + "-" * 70)
-    for i in range(10):
-        c = generate_coach("Coach " + str(i+1), prestige=random.randint(20, 90))
-        print("  {:<22} {:<20} {:<6} {:<6} {:<8} {:<8}".format(
-            c["name"], c["archetype"],
-            c["pace"], str(c["rotation_size"]) + "p",
-            str(c["offensive_skill"]) + "/20",
-            str(c["defensive_skill"]) + "/20"
         ))
 
     # --- STYLE FIT TEST ---

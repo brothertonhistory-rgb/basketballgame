@@ -3,15 +3,18 @@ from player import generate_team, get_team_ratings
 from coach import generate_coach
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Program Database v0.1
+# COLLEGE HOOPS SIM -- Program Database v0.2
 # System 6 of the Design Bible
 # Defines what a program IS -- persistent across seasons
+#
+# v0.2 CHANGES:
+#   - update_prestige_for_results() performance multiplier reduced from 10 to 6.
+#     This tightens prestige swings. A team wildly overperforming their prestige
+#     level now moves ~3-4 points per season instead of 5-6, compounding less.
 # -----------------------------------------
 
-# Division definitions
 DIVISIONS = ["D1", "D2", "D3", "JUCO"]
 
-# Conference definitions -- approximately 2008 NCAA alignment per the Bible
 CONFERENCES = {
     "D1": [
         "ACC", "Big Ten", "Big 12", "SEC", "Pac-10",
@@ -65,22 +68,15 @@ def create_program(name, nickname, city, state, division, conference,
                          0.05 = moves 5% of the gap each season (slow, realistic)
     """
 
-    # Gravity pull rate -- slow by default, per the Bible
-    # Blue bloods have stronger gravity (they bounce back faster)
     if prestige_gravity >= 80:
-        gravity_pull_rate = 0.08   # Elite programs snap back quickly
+        gravity_pull_rate = 0.08
     elif prestige_gravity >= 60:
-        gravity_pull_rate = 0.05   # Good programs drift back moderately
+        gravity_pull_rate = 0.05
     else:
-        gravity_pull_rate = 0.03   # Small programs change slowly
+        gravity_pull_rate = 0.03
 
-    # Convert prestige to 1-20 scale for player generation
     prestige_for_players = max(1, min(20, int(prestige_current / 5)))
-
-    # Generate the roster based on current prestige
     roster_data = generate_team(name, prestige=prestige_for_players)
-
-    # Generate a coach -- prestige influences competence ceiling
     coach = generate_coach(coach_name, prestige=prestige_current)
 
     program = {
@@ -94,40 +90,40 @@ def create_program(name, nickname, city, state, division, conference,
 
         # --- FACILITIES ---
         "home_court":   home_court,
-        "venue_rating": venue_rating,   # 1-100, affects home court advantage
+        "venue_rating": venue_rating,
 
-        # --- PRESTIGE -- two-value model per the Bible ---
-        "prestige_current":    prestige_current,    # Where they are now
-        "prestige_gravity":    prestige_gravity,    # Where they naturally belong
+        # --- PRESTIGE ---
+        "prestige_current":    prestige_current,
+        "prestige_gravity":    prestige_gravity,
         "prestige_grade":      prestige_grade(prestige_current),
-        "gravity_pull_rate":   gravity_pull_rate,   # How fast they drift back
+        "gravity_pull_rate":   gravity_pull_rate,
 
         # --- COACHING ---
         "coach_name":   coach_name,
-        "coach_seasons": 0,            # Seasons with this coach
-        "coach":        coach,         # Full coaching philosophy object
+        "coach_seasons": 0,
+        "coach":        coach,
 
-        # --- INSTITUTIONAL CHARACTER -- System 9 ---
-        "investment_appetite":   random.randint(1, 10),   # How much they spend
-        "prestige_sensitivity":  random.randint(1, 10),   # How much fans care
-        "community_pressure":    random.randint(1, 10),   # External pressure
-        "leadership_stability":  random.randint(1, 10),   # AD/president stability
+        # --- INSTITUTIONAL CHARACTER ---
+        "investment_appetite":   random.randint(1, 10),
+        "prestige_sensitivity":  random.randint(1, 10),
+        "community_pressure":    random.randint(1, 10),
+        "leadership_stability":  random.randint(1, 10),
 
         # --- JOB SECURITY ---
-        "job_security":  75,    # 0-100, starts neutral, moves with results
+        "job_security":  75,
 
         # --- CURRENT SEASON STATE ---
         "wins":   0,
         "losses": 0,
         "conf_wins":   0,
         "conf_losses": 0,
-        "season_results": [],   # List of game result dicts
+        "season_results": [],
 
         # --- ROSTER ---
         "roster": roster_data["roster"],
 
-        # --- HISTORY -- grows each season ---
-        "season_history": [],   # One entry per completed season
+        # --- HISTORY ---
+        "season_history": [],
     }
 
     return program
@@ -137,9 +133,6 @@ def apply_gravity_pull(program):
     """
     Pulls current prestige toward historical gravity anchor.
     Called once per season at season end.
-    The gap shrinks by gravity_pull_rate each season.
-    Example: current=60, gravity=80, rate=0.05
-             gap = 20, pull = 1.0 point toward 80
     """
     current = program["prestige_current"]
     gravity = program["prestige_gravity"]
@@ -158,28 +151,30 @@ def update_prestige_for_results(program, wins, losses, made_tournament, tourname
     """
     Adjusts current prestige based on season results.
     Called at season end BEFORE gravity pull.
-    Winning pushes prestige up. Losing pulls it down.
-    Tournament runs give a bigger boost.
+
+    v0.2: Performance multiplier reduced from 10 to 6 to tighten
+    season-to-season swings. Previously a single great season could
+    move prestige 5-7 points before gravity even ran, compounding
+    into 20+ point swings over 3 seasons. Now capped closer to 3-4
+    points for a genuinely exceptional season.
     """
     current = program["prestige_current"]
 
-    # Win/loss impact -- winning percentage vs expected
     games = wins + losses
     if games > 0:
         win_pct = wins / games
-        # Expected win pct based on prestige -- elite teams should win more
+        # Expected win pct based on prestige
         expected_win_pct = 0.35 + (current / 100) * 0.45
-        performance_delta = (win_pct - expected_win_pct) * 10
+        # Reduced multiplier: 6 instead of 10
+        performance_delta = (win_pct - expected_win_pct) * 6
     else:
         performance_delta = 0
 
-    # Tournament impact
     tournament_bonus = 0
     if made_tournament:
         tournament_bonus += 2
-        tournament_bonus += tournament_wins * 1.5   # Each win is worth more
+        tournament_bonus += tournament_wins * 1.5
 
-    # Apply changes -- clamped 1-100
     new_prestige = current + performance_delta + tournament_bonus
     new_prestige = max(1, min(100, new_prestige))
 
@@ -194,12 +189,12 @@ def record_game_result(program, opponent_name, points_for, points_against, is_ho
     won = points_for > points_against
 
     result = {
-        "opponent":      opponent_name,
-        "points_for":    points_for,
-        "points_against":points_against,
-        "won":           won,
-        "is_home":       is_home,
-        "is_conference": is_conference,
+        "opponent":       opponent_name,
+        "points_for":     points_for,
+        "points_against": points_against,
+        "won":            won,
+        "is_home":        is_home,
+        "is_conference":  is_conference,
     }
 
     program["season_results"].append(result)
@@ -247,93 +242,45 @@ def build_sample_programs():
 
     programs = []
 
-    # Blue blood -- Kentucky
     programs.append(create_program(
-        name="Kentucky",
-        nickname="Wildcats",
-        city="Lexington",
-        state="KY",
-        division="D1",
-        conference="SEC",
-        home_court="Rupp Arena",
-        venue_rating=97,
-        prestige_current=92,
-        prestige_gravity=90,
+        name="Kentucky", nickname="Wildcats", city="Lexington", state="KY",
+        division="D1", conference="SEC", home_court="Rupp Arena",
+        venue_rating=97, prestige_current=92, prestige_gravity=90,
         coach_name="Coach Calipari",
     ))
 
-    # Big 12 power -- Kansas
     programs.append(create_program(
-        name="Kansas",
-        nickname="Jayhawks",
-        city="Lawrence",
-        state="KS",
-        division="D1",
-        conference="Big 12",
-        home_court="Allen Fieldhouse",
-        venue_rating=98,
-        prestige_current=91,
-        prestige_gravity=89,
+        name="Kansas", nickname="Jayhawks", city="Lawrence", state="KS",
+        division="D1", conference="Big 12", home_court="Allen Fieldhouse",
+        venue_rating=98, prestige_current=91, prestige_gravity=89,
         coach_name="Coach Self",
     ))
 
-    # ACC power -- Duke
     programs.append(create_program(
-        name="Duke",
-        nickname="Blue Devils",
-        city="Durham",
-        state="NC",
-        division="D1",
-        conference="ACC",
-        home_court="Cameron Indoor Stadium",
-        venue_rating=99,
-        prestige_current=93,
-        prestige_gravity=91,
+        name="Duke", nickname="Blue Devils", city="Durham", state="NC",
+        division="D1", conference="ACC", home_court="Cameron Indoor Stadium",
+        venue_rating=99, prestige_current=93, prestige_gravity=91,
         coach_name="Coach K",
     ))
 
-    # Good mid-major -- Gonzaga
     programs.append(create_program(
-        name="Gonzaga",
-        nickname="Bulldogs",
-        city="Spokane",
-        state="WA",
-        division="D1",
-        conference="WCC",
-        home_court="McCarthey Athletic Center",
-        venue_rating=82,
-        prestige_current=78,
-        prestige_gravity=72,
+        name="Gonzaga", nickname="Bulldogs", city="Spokane", state="WA",
+        division="D1", conference="WCC", home_court="McCarthey Athletic Center",
+        venue_rating=82, prestige_current=78, prestige_gravity=72,
         coach_name="Coach Few",
     ))
 
-    # Average mid-major
     programs.append(create_program(
-        name="Drake",
-        nickname="Bulldogs",
-        city="Des Moines",
-        state="IA",
-        division="D1",
-        conference="Missouri Valley",
-        home_court="Knapp Center",
-        venue_rating=61,
-        prestige_current=54,
-        prestige_gravity=52,
+        name="Drake", nickname="Bulldogs", city="Des Moines", state="IA",
+        division="D1", conference="Missouri Valley", home_court="Knapp Center",
+        venue_rating=61, prestige_current=54, prestige_gravity=52,
         coach_name="Coach Johnson",
     ))
 
-    # Low major
     programs.append(create_program(
-        name="Eastern Illinois",
-        nickname="Panthers",
-        city="Charleston",
-        state="IL",
-        division="D1",
-        conference="Big South",
-        home_court="Lantz Arena",
-        venue_rating=42,
-        prestige_current=31,
-        prestige_gravity=30,
+        name="Eastern Illinois", nickname="Panthers", city="Charleston", state="IL",
+        division="D1", conference="Big South", home_court="Lantz Arena",
+        venue_rating=42, prestige_current=31, prestige_gravity=30,
         coach_name="Coach Williams",
     ))
 
@@ -349,15 +296,12 @@ if __name__ == "__main__":
     print("Building sample programs...")
     programs = build_sample_programs()
 
-    # Print summaries
     for p in programs:
         print_program_summary(p)
 
-    # Test gravity pull
     print("")
     print("=== Gravity Pull Test -- 5 seasons ===")
     kentucky = programs[0]
-    # Simulate Kentucky having a rough patch -- drop prestige
     kentucky["prestige_current"] = 70
     print("Kentucky prestige dropped to 70 (gravity anchor: " + str(kentucky["prestige_gravity"]) + ")")
     print("")
@@ -365,6 +309,19 @@ if __name__ == "__main__":
         kentucky = apply_gravity_pull(kentucky)
         print("After season " + str(season) + ": " +
               str(kentucky["prestige_current"]) + " (" + kentucky["prestige_grade"] + ")")
+
+    print("")
+    print("=== Prestige Volatility Test -- v0.2 multiplier (6) vs v0.1 (10) ===")
+    print("  Simulating 3 exceptional seasons for a prestige-70 team:")
+    test_prog = build_sample_programs()[4]   # Drake
+    test_prog["prestige_current"] = 70
+    test_prog["prestige_gravity"] = 52
+    for year in range(1, 4):
+        update_prestige_for_results(test_prog, wins=28, losses=4,
+                                    made_tournament=True, tournament_wins=2)
+        apply_gravity_pull(test_prog)
+        print("  After year " + str(year) + ": " +
+              str(test_prog["prestige_current"]) + " (" + test_prog["prestige_grade"] + ")")
 
     print("")
     print("=== Coach Verification ===")
