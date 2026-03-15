@@ -749,6 +749,17 @@ def _build_player_target_list(player, all_programs):
       - Home proximity (home_loyalty weight)
       - Slight noise (personal preference)
 
+    VOLATILITY SCRAMBLE:
+      High-volatility players don't always follow rational logic.
+      A volatile player may throw a wild card school into their list --
+      a low-major where they'd dominate, a school near home, anything.
+      At max volatility, their entire rational list may be discarded.
+
+      Low  (1-7):  pure rational list
+      Mid  (8-13): 15% chance one wild card slot replaces a rational slot
+      High (14-17): 35% wild card chance, 10% full random list
+      Max  (18-20): 50% wild card chance, 25% full random list
+
     Returns top PLAYER_APPROACH_COUNT schools as ordered list.
     """
     ambition      = player.get("prestige_ambition", 10)
@@ -756,6 +767,7 @@ def _build_player_target_list(player, all_programs):
     home_loyalty  = player.get("home_loyalty", 10)
     home_state    = player.get("home_state", "TX")
     current_prog  = player.get("portal_from", "")
+    volatility    = player.get("volatility", 5)
     quality       = _get_primary_quality(player)
 
     # Prestige band
@@ -764,9 +776,6 @@ def _build_player_target_list(player, all_programs):
                     player.get("_current_prestige", 30))
 
     # Role band: how deep into a roster will they accept?
-    # role_acceptance 1-5: only top-2 option
-    # role_acceptance 6-12: up to top-3
-    # role_acceptance 13-20: up to top-4
     if role_accept <= 5:
         max_slot = 2
     elif role_accept <= 12:
@@ -774,6 +783,50 @@ def _build_player_target_list(player, all_programs):
     else:
         max_slot = 4
 
+    # --- VOLATILITY SCRAMBLE SETUP ---
+    # Determine scramble mode before building the rational list
+    go_full_random   = False
+    inject_wild_card = False
+
+    if volatility >= 18:
+        if random.random() < 0.25:
+            go_full_random = True
+        elif random.random() < 0.50:
+            inject_wild_card = True
+    elif volatility >= 14:
+        if random.random() < 0.10:
+            go_full_random = True
+        elif random.random() < 0.35:
+            inject_wild_card = True
+    elif volatility >= 8:
+        if random.random() < 0.15:
+            inject_wild_card = True
+
+    # --- FULL RANDOM LIST ---
+    # Ignores prestige band, offensive role, everything.
+    # Player picks from any open program with a small home proximity weight.
+    if go_full_random:
+        candidates = [
+            p for p in all_programs
+            if p["name"] != current_prog
+        ]
+        random.shuffle(candidates)
+        # Weight toward home region slightly even in chaos
+        def _chaos_score(prog):
+            dist = get_distance_tier(home_state, prog.get("state", ""))
+            prox = {"same_state": 4, "same_region": 2,
+                    "adjacent_region": 1, "far": 0}.get(dist, 0)
+            return prox + random.random() * 3   # mostly random, home bias slight
+
+        candidates.sort(key=_chaos_score, reverse=True)
+        # Return as (prog, projected_slot) pairs
+        result = []
+        for prog in candidates[:PLAYER_APPROACH_COUNT]:
+            slot = _projected_offensive_slot(player, prog.get("roster", []))
+            result.append((prog, slot))
+        return result
+
+    # --- RATIONAL LIST ---
     scored = []
     for prog in all_programs:
         if prog["name"] == current_prog:
@@ -783,40 +836,54 @@ def _build_player_target_list(player, all_programs):
         if prestige < p_floor or prestige > p_ceiling:
             continue
 
-        # Check offensive slot fit
         slot = _projected_offensive_slot(player, prog.get("roster", []))
         if slot > max_slot:
             continue
 
-        # Score this school
-        # Prestige fit: sweet spot is near ceiling, not too far below
-        prestige_gap   = p_ceiling - prestige
-        prestige_score = max(0, 40 - prestige_gap)   # closer to ceiling = higher score
-
-        # Slot score: slot 1 = best, slot 4 = worst
-        slot_score = (5 - slot) * 15   # slot 1 = 60, slot 2 = 45, etc.
-
-        # Home proximity score
-        prog_state    = prog.get("state", "")
-        dist_tier     = get_distance_tier(home_state, prog_state)
-        proximity_scores = {
-            "same_state":      25,
-            "same_region":     15,
-            "adjacent_region": 8,
-            "far":             0,
+        prestige_gap       = p_ceiling - prestige
+        prestige_score     = max(0, 40 - prestige_gap)
+        slot_score         = (5 - slot) * 15
+        prog_state         = prog.get("state", "")
+        dist_tier          = get_distance_tier(home_state, prog_state)
+        proximity_scores   = {
+            "same_state": 25, "same_region": 15,
+            "adjacent_region": 8, "far": 0,
         }
-        proximity_score = proximity_scores.get(dist_tier, 0)
-        proximity_weighted = proximity_score * (home_loyalty / 10.0)
-
-        # Small random noise -- personal preference, intangibles
-        noise = random.gauss(0, 5)
-
-        total_score = prestige_score + slot_score + proximity_weighted + noise
+        proximity_weighted = proximity_scores.get(dist_tier, 0) * (home_loyalty / 10.0)
+        noise              = random.gauss(0, 5)
+        total_score        = prestige_score + slot_score + proximity_weighted + noise
         scored.append((prog, total_score, slot))
 
-    # Sort by score descending -- player's ranked preference list
     scored.sort(key=lambda x: x[1], reverse=True)
-    return [(prog, slot) for prog, score, slot in scored[:PLAYER_APPROACH_COUNT]]
+    rational_list = [(prog, slot) for prog, score, slot in scored[:PLAYER_APPROACH_COUNT]]
+
+    # --- INJECT WILD CARD ---
+    # Replace one slot in the rational list with a random school
+    # outside their normal prestige band. Favors programs where
+    # the player would be the clear top option (slot 1).
+    if inject_wild_card and rational_list:
+        wild_candidates = [
+            p for p in all_programs
+            if p["name"] != current_prog
+            and p.get("prestige_current", 50) < p_floor   # outside their normal range
+        ]
+        if wild_candidates:
+            # Slight home proximity weight even on wild card
+            def _wild_score(prog):
+                dist = get_distance_tier(home_state, prog.get("state", ""))
+                prox = {"same_state": 3, "same_region": 1,
+                        "adjacent_region": 0, "far": 0}.get(dist, 0)
+                return prox + random.random() * 5
+
+            wild_candidates.sort(key=_wild_score, reverse=True)
+            wild_prog = wild_candidates[0]
+            wild_slot = _projected_offensive_slot(player, wild_prog.get("roster", []))
+
+            # Insert wild card at a random position in the list
+            insert_pos = random.randint(0, len(rational_list) - 1)
+            rational_list[insert_pos] = (wild_prog, wild_slot)
+
+    return rational_list
 
 
 # -----------------------------------------
