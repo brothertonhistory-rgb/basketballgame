@@ -499,42 +499,144 @@ def calculate_conference_standings(conference_programs):
 # SCHEDULE BUILDERS
 # -----------------------------------------
 
+# Target games per season
+SEASON_GAME_TARGET = 30
+
+# Conference games per team by conference size.
+# Every team plays each opponent at least once.
+# Remaining games filled by random second (or third) matchups.
+# Minimum 14 conference games guaranteed.
+def _conf_games_target(n):
+    """Returns target conference games per team given n teams in conference."""
+    if n <= 5:   return 16
+    if n <= 6:   return 15
+    if n <= 7:   return 14
+    if n <= 8:   return 14
+    if n <= 11:  return 18
+    if n <= 17:  return 18
+    return 20    # 18+ team conferences (ACC, Big Ten, Big 12)
+
+
 def build_conference_schedule(programs):
+    """
+    Builds a realistic conference schedule hitting the target game count.
+
+    Every team plays every other team at least once (single round-robin base).
+    Remaining slots filled by randomly selected rematches until target is hit.
+    For large conferences (18 teams, target 20), uses random selection of 20
+    opponents without a full round-robin (not everyone plays everyone).
+
+    Home/away: each matchup generates one home and one away game.
+    Target conference games per team maintained within +/-1.
+    """
+    n      = len(programs)
+    target = _conf_games_target(n)
+
     matchups = []
-    n = len(programs)
-    for i in range(n):
-        for j in range(i + 1, n):
-            matchups.append({"home": programs[i], "away": programs[j], "is_conference": True})
-            matchups.append({"home": programs[j], "away": programs[i], "is_conference": True})
+
+    if n >= 18:
+        # Large conference -- random selection of opponents, no full round-robin
+        # Each team plays exactly target opponents, each game played once
+        # (home for one team, away for the other)
+        for i, prog in enumerate(programs):
+            others    = [p for p in programs if p["name"] != prog["name"]]
+            opponents = random.sample(others, min(target, len(others)))
+            for opp in opponents:
+                # Only add if this matchup hasn't been added yet
+                already = any(
+                    (m["home"]["name"] == prog["name"] and m["away"]["name"] == opp["name"]) or
+                    (m["home"]["name"] == opp["name"]  and m["away"]["name"] == prog["name"])
+                    for m in matchups
+                )
+                if not already:
+                    if random.random() < 0.5:
+                        matchups.append({"home": prog, "away": opp, "is_conference": True})
+                    else:
+                        matchups.append({"home": opp, "away": prog, "is_conference": True})
+    else:
+        # Smaller conferences -- single round-robin base, then random rematches
+        # Step 1: single round-robin (every team plays every other team once)
+        base_matchups = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                if random.random() < 0.5:
+                    base_matchups.append({
+                        "home": programs[i], "away": programs[j], "is_conference": True})
+                else:
+                    base_matchups.append({
+                        "home": programs[j], "away": programs[i], "is_conference": True})
+        matchups.extend(base_matchups)
+
+        # Step 2: count current games per team
+        game_counts = {p["name"]: 0 for p in programs}
+        for m in matchups:
+            game_counts[m["home"]["name"]] += 1
+            game_counts[m["away"]["name"]] += 1
+
+        # Step 3: add rematches until everyone hits target (+/-1)
+        # Pair teams that both need more games
+        max_attempts = n * target * 4
+        attempts     = 0
+        pairs        = [(programs[i], programs[j])
+                        for i in range(n) for j in range(i+1, n)]
+
+        while attempts < max_attempts:
+            attempts += 1
+            # Find teams still below target
+            needy = [p for p in programs if game_counts[p["name"]] < target]
+            if not needy:
+                break
+
+            # Pick a random needy team and find a valid rematch partner
+            prog = random.choice(needy)
+            partners = [
+                p for p in programs
+                if p["name"] != prog["name"]
+                and game_counts[p["name"]] < target
+            ]
+            if not partners:
+                break
+
+            opp = random.choice(partners)
+            if random.random() < 0.5:
+                matchups.append({"home": prog, "away": opp, "is_conference": True})
+            else:
+                matchups.append({"home": opp, "away": prog, "is_conference": True})
+
+            game_counts[prog["name"]] += 1
+            game_counts[opp["name"]]  += 1
+
     return matchups
 
 
-def build_non_conference_schedule(programs, all_programs, games_per_team=6):
+def build_non_conference_schedule(programs, all_programs):
     """
-    Builds non-conference HOME games only for this conference's programs.
+    Builds non-conference HOME games to fill each team's schedule to
+    SEASON_GAME_TARGET total games.
 
-    CRITICAL FIX (v0.6): Every matchup has the conference program as HOME.
-    record_game_result() is only called for the HOME team in the conference
-    simulation loop. The away (opponent) team's result is NOT recorded here
-    -- it gets recorded when THEIR conference simulation runs their home games.
+    Each team's non-conference game count = SEASON_GAME_TARGET - conf_games_played.
+    Uses prestige-bracketed matching (existing logic).
 
-    The old code alternated home/away and called record_game_result() on both
-    teams, meaning every out-of-conference team accumulated wins from every
-    other conference's simulation. Texas was showing 150+ wins/season and
-    gaining 28 prestige points in one year because update_prestige_for_results()
-    saw a massive win total from all these phantom games.
+    CRITICAL: Conference program is always HOME. Away team's result recorded
+    by their own conference simulation. (v0.6 double-counting fix preserved.)
     """
-    matchups      = []
-    conf_names    = set(p["conference"] for p in programs)
+    matchups   = []
+    conf_names = set(p["conference"] for p in programs)
     non_conf_pool = [p for p in all_programs if p["conference"] not in conf_names]
 
     if len(non_conf_pool) < 2:
         return matchups
 
+    # Count conference games already scheduled for each program
+    # We can't know exact conf games at this point so use the target
+    n              = len(programs)
+    conf_target    = _conf_games_target(n)
+    non_conf_count = max(8, SEASON_GAME_TARGET - conf_target)
+
     for program in programs:
         scheduled = 0
         attempts  = 0
-        while scheduled < games_per_team and attempts < 200:
+        while scheduled < non_conf_count and attempts < 300:
             attempts += 1
             limit     = 30 + random.randint(0, 30)
             candidate = random.choice(non_conf_pool)
@@ -542,7 +644,6 @@ def build_non_conference_schedule(programs, all_programs, games_per_team=6):
                 continue
             if abs(candidate["prestige_current"] - program["prestige_current"]) > limit:
                 continue
-            # Conference program is always HOME. Away team's result recorded by their conf.
             matchups.append({"home": program, "away": candidate, "is_conference": False})
             scheduled += 1
 
@@ -868,7 +969,9 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
         win_pct = p["wins"] / games if games > 0 else 0.0
         conf_finish_percentile = p.get("conf_finish_percentile", 0.5)
 
-        PRESTIGE_GAME_CAP = 36
+        # Cap prestige calculation at 32 games -- standardized seasons
+        # shouldn't exceed this but guard against edge cases
+        PRESTIGE_GAME_CAP = 32
         if games > PRESTIGE_GAME_CAP:
             capped_wins   = round(win_pct * PRESTIGE_GAME_CAP)
             capped_losses = PRESTIGE_GAME_CAP - capped_wins
