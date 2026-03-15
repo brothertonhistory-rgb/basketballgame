@@ -4,12 +4,19 @@ from program import (create_program, record_game_result, apply_gravity_pull,
                      update_prestige_for_results, get_record_string, prestige_grade)
 from programs_data import build_all_d1_programs
 from recruiting import generate_recruiting_class, print_class_summary
+from recruiting_offers import generate_offers, calculate_interest_scores
+from recruiting_commitments import resolve_full_recruiting_cycle, print_cycle_summary
+from lifecycle import advance_season, print_lifecycle_summary
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Season Calendar v0.3
+# COLLEGE HOOPS SIM -- Season Calendar v0.4
 # Full world simulation -- all 328 D1 programs
 # All conferences simulate simultaneously
-# Now includes annual recruiting class generation
+# NOW FULLY CONNECTED:
+#   1. Season simulation (games, standings, prestige)
+#   2. Recruiting cycle  (offers, interest, commitments)
+#   3. Player lifecycle  (graduation, aging, enrollment)
+# The world now evolves season to season.
 # -----------------------------------------
 
 def build_conference_schedule(programs):
@@ -42,8 +49,6 @@ def build_non_conference_schedule(programs, all_programs, games_per_team=8):
         while games_scheduled < games_per_team and attempts < 200:
             attempts += 1
 
-            # Prestige-aware scheduling -- programs tend to schedule similar prestige opponents
-            # But with some variance so upsets and cupcakes both happen
             prestige_diff_limit = 30 + random.randint(0, 30)
             candidate = random.choice(non_conf_pool)
 
@@ -66,7 +71,6 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
     Simulates one conference's full season.
     Returns the programs with updated records and prestige.
     """
-    # Reset season state
     for p in conference_programs:
         p["wins"] = 0
         p["losses"] = 0
@@ -74,7 +78,6 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
         p["conf_losses"] = 0
         p["season_results"] = []
 
-    # Build schedule
     conf_schedule     = build_conference_schedule(conference_programs)
     non_conf_schedule = build_non_conference_schedule(
         conference_programs, all_programs, games_per_team=6
@@ -82,7 +85,6 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
     full_schedule = conf_schedule + non_conf_schedule
     random.shuffle(full_schedule)
 
-    # Simulate every game
     for matchup in full_schedule:
         home = matchup["home"]
         away = matchup["away"]
@@ -93,7 +95,6 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
         record_game_result(away, home["name"], result["away"], result["home"],
                            is_home=False, is_conference=matchup["is_conference"])
 
-    # End of season updates
     for p in conference_programs:
         games = p["wins"] + p["losses"]
         win_pct = p["wins"] / games if games > 0 else 0.0
@@ -148,18 +149,20 @@ def apply_gravity_drift(program, season_year, win_pct):
 
 def simulate_world_season(all_programs, season_year, verbose=True):
     """
-    Simulates a full season for every conference in the world simultaneously.
-    Generates a fresh recruiting class for this season.
-    Returns all programs with updated records and prestige,
-    plus the recruiting class for this cycle.
-    """
-    # --- RECRUITING CLASS -- generated at the start of each season ---
-    # This is the pool all 328 programs will eventually draw from
-    # For now we generate it and attach it to the season -- offers and
-    # commitments will be layered on in the next phase
-    recruiting_class = generate_recruiting_class(season=season_year)
+    Simulates a COMPLETE year for the entire world.
 
-    # Group programs by conference
+    Step 1 -- Season simulation: every conference plays its full schedule,
+              records update, prestige shifts.
+    Step 2 -- Recruiting cycle: class generated, offers made, interest
+              calculated, commitments resolved.
+    Step 3 -- Lifecycle: seniors graduate, players age, recruits enroll.
+
+    Returns (all_programs, recruiting_class, cycle_summary, lifecycle_summary)
+    """
+
+    # -------------------------------------------
+    # STEP 1: SEASON SIMULATION
+    # -------------------------------------------
     conferences = {}
     for p in all_programs:
         conf = p["conference"]
@@ -172,10 +175,8 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         print("=" * 60)
         print("WORLD SEASON " + str(season_year))
         print(str(len(all_programs)) + " programs across " + str(len(conferences)) + " conferences")
-        print("Recruiting class: " + str(len(recruiting_class)) + " prospects")
         print("=" * 60)
 
-    # Simulate each conference
     for conf_name, conf_programs in conferences.items():
         if len(conf_programs) < 2:
             continue
@@ -184,13 +185,50 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     if verbose:
         print_national_standings(all_programs, season_year)
 
-    return all_programs, recruiting_class
+    # -------------------------------------------
+    # STEP 2: RECRUITING CYCLE
+    # -------------------------------------------
+    if verbose:
+        print("")
+        print("--- " + str(season_year) + " Recruiting Cycle ---")
+
+    recruiting_class = generate_recruiting_class(season=season_year)
+
+    if verbose:
+        print("  Class generated: " + str(len(recruiting_class)) + " prospects")
+
+    all_programs, recruiting_class = generate_offers(all_programs, recruiting_class)
+    all_programs, recruiting_class = calculate_interest_scores(all_programs, recruiting_class)
+
+    all_programs, recruiting_class, cycle_summary = resolve_full_recruiting_cycle(
+        all_programs, recruiting_class, verbose=False
+    )
+
+    if verbose:
+        print("  Offers sent and interest calculated")
+        print("  Early signings:  " + str(len(cycle_summary["early_commits"])))
+        print("  Late signings:   " + str(len(cycle_summary["late_commits"])))
+        print("  Total committed: " + str(cycle_summary["total_commits"]))
+        print("  Unsigned:        " + str(len(cycle_summary["unsigned"])))
+
+    # -------------------------------------------
+    # STEP 3: LIFECYCLE -- graduation, aging, enrollment
+    # -------------------------------------------
+    if verbose:
+        print("")
+        print("--- " + str(season_year) + " Roster Turnover ---")
+
+    all_programs, lifecycle_summary = advance_season(all_programs, recruiting_class)
+
+    if verbose:
+        print("  Seniors graduated: " + str(lifecycle_summary["total_graduated"]))
+        print("  Recruits enrolled: " + str(lifecycle_summary["total_enrolled"]))
+
+    return all_programs, recruiting_class, cycle_summary, lifecycle_summary
 
 
 def print_national_standings(all_programs, season_year):
     """Prints top 25 and conference leaders."""
-
-    # Sort by win percentage then wins
     ranked = sorted(
         [p for p in all_programs if p["wins"] + p["losses"] > 0],
         key=lambda p: (p["wins"] / max(1, p["wins"] + p["losses"]), p["wins"]),
@@ -209,7 +247,6 @@ def print_national_standings(all_programs, season_year):
             str(p["prestige_current"]) + " (" + p["prestige_grade"] + ")"
         ))
 
-    # Conference leaders
     print("")
     print("--- " + str(season_year) + " Conference Leaders ---")
     conferences = {}
@@ -255,27 +292,25 @@ def print_prestige_movers(all_programs, start_prestiges, season_year):
               str(start) + " -> " + str(end))
 
 
-def print_recruiting_summary(recruiting_class, season_year):
-    """Prints a one-line recruiting class summary alongside season results."""
-    star_counts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
-    for r in recruiting_class:
-        star_counts[r["stars_consensus"]] += 1
-
-    print("")
-    print("--- " + str(season_year) + " Recruiting Class Summary ---")
-    print("  Total prospects: " + str(len(recruiting_class)))
-    print("  5-star: " + str(star_counts[5]) +
-          "  4-star: " + str(star_counts[4]) +
-          "  3-star: " + str(star_counts[3]) +
-          "  2-star: " + str(star_counts[2]) +
-          "  1-star: " + str(star_counts[1]))
-    print("  #1 prospect: " + recruiting_class[0]["name"] +
-          " (" + recruiting_class[0]["position"] + ", " +
-          recruiting_class[0]["home_state"] + ")")
+def print_roster_evolution(program):
+    """Shows a program's roster year-by-year breakdown."""
+    roster = program.get("roster", [])
+    year_counts = {"Freshman": 0, "Sophomore": 0, "Junior": 0, "Senior": 0}
+    for p in roster:
+        yr = p.get("year", "Unknown")
+        if yr in year_counts:
+            year_counts[yr] += 1
+    print("  " + program["name"] + " roster (" + str(len(roster)) + " players):  " +
+          "Fr:" + str(year_counts["Freshman"]) +
+          " So:" + str(year_counts["Sophomore"]) +
+          " Jr:" + str(year_counts["Junior"]) +
+          " Sr:" + str(year_counts["Senior"]))
 
 
 # -----------------------------------------
-# TEST -- Full world simulation with recruiting
+# TEST -- Full connected world simulation
+# Run this to simulate multiple complete seasons
+# and watch programs, rosters, and prestige evolve
 # -----------------------------------------
 
 if __name__ == "__main__":
@@ -284,22 +319,30 @@ if __name__ == "__main__":
     all_programs = build_all_d1_programs()
     print("Loaded " + str(len(all_programs)) + " programs")
 
-    # Store starting prestiges for comparison
     start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    # Simulate 3 world seasons -- now returns recruiting class each year
+    # Simulate 3 complete seasons -- games + recruiting + lifecycle all connected
     for year in range(2024, 2027):
-        all_programs, recruiting_class = simulate_world_season(
+
+        all_programs, recruiting_class, cycle_summary, lifecycle_summary = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
-        print_recruiting_summary(recruiting_class, year)
+
         print_prestige_movers(all_programs, start_prestiges, year)
         start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    # Show Oklahoma State's journey
+    # -------------------------------------------
+    # END OF 3-YEAR REPORT
+    # -------------------------------------------
     print("")
+    print("=" * 60)
+    print("  3-YEAR WORLD SIMULATION COMPLETE")
+    print("=" * 60)
+
+    # Show Oklahoma State's full journey
     osu = next(p for p in all_programs if p["name"] == "Oklahoma State")
-    print("=== Oklahoma State after 3 seasons ===")
+    print("")
+    print("=== Oklahoma State -- 3-Year Journey ===")
     print("Current prestige: " + str(osu["prestige_current"]) + " (" + osu["prestige_grade"] + ")")
     print("Gravity anchor:   " + str(osu["prestige_gravity"]))
     print("Season history:")
@@ -307,3 +350,24 @@ if __name__ == "__main__":
         print("  " + str(s["year"]) + ": " + str(s["wins"]) + "-" + str(s["losses"]) +
               " (conf: " + str(s["conf_wins"]) + "-" + str(s["conf_losses"]) + ")" +
               "  Prestige: " + str(s["prestige_end"]))
+    print_roster_evolution(osu)
+
+    # Show Kentucky's roster evolution
+    kentucky = next(p for p in all_programs if p["name"] == "Kentucky")
+    print("")
+    print("=== Kentucky -- Roster After 3 Seasons ===")
+    print_roster_evolution(kentucky)
+    freshmen = [p for p in kentucky["roster"] if p["year"] == "Freshman"]
+    print("  Current freshmen:")
+    for p in freshmen:
+        print("    " + p["name"] + "  " + p["position"])
+
+    # Thin roster warning -- any program below 8 players is a problem
+    thin = [p for p in all_programs if len(p["roster"]) < 8]
+    print("")
+    if thin:
+        print("WARNING: " + str(len(thin)) + " programs with thin rosters (<8 players):")
+        for p in thin:
+            print("  " + p["name"] + ": " + str(len(p["roster"])) + " players")
+    else:
+        print("PASS: All programs have 8+ players on roster after 3 seasons.")
