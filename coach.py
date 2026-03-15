@@ -69,6 +69,13 @@
 #        values_shooting, values_defense, values_toughness,
 #        values_role_players
 #
+# v0.4 CHANGES:
+#   - calculate_style_fit() updated to normalize player skill attributes
+#     against 1000 instead of 20. All style fit scores (0-100) are
+#     equivalent to v0.3 at the mean. Only the denominator changed.
+#   - _scale_attr() helper added for 1-1000 player attribute scaling.
+#   - Coach competence ratings STAY 1-20. Intentional.
+#
 # v0.3 CHANGES:
 #   - _generate_competence() bonus now capped at 3 (was uncapped, causing
 #     multiple coaches to max out at 20/20 at elite programs)
@@ -279,6 +286,15 @@ def _scale(val, lo, hi):
     return (val - lo) / (hi - lo)
 
 
+def _scale_attr(val):
+    """
+    Scales a player skill attribute (1-1000) to 0.0-1.0.
+    Used by calculate_style_fit() which reads raw player attributes.
+    Replaces the old _scale(val, 1, 20) calls.
+    """
+    return _scale(val, 1, 1000)
+
+
 # -----------------------------------------
 # MAIN GENERATOR
 # -----------------------------------------
@@ -486,7 +502,7 @@ def calculate_style_fit(player, coach):
     checks     = 0
 
     def contrib(player_val, weight):
-        return _scale(player_val, 1, 20) * weight
+        return _scale_attr(player_val) * weight
 
     # Pace fit -- fast systems need speed
     if coach["pace"] >= 60:

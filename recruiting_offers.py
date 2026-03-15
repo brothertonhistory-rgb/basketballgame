@@ -4,6 +4,11 @@ import random
 # COLLEGE HOOPS SIM -- Recruiting Offers & Interest v0.3
 # System 3 of the Design Bible
 #
+# v0.4 CHANGES:
+#   - _roster_value_score() updated to normalize skill attributes
+#     against 1000 instead of 20. Mental attributes (basketball_iq,
+#     coachability, work_ethic) stay /20 -- they are still 1-20 scale.
+#
 # v0.3 CHANGES:
 #   - assess_roster_needs() now enforces a minimum class size of 3
 #     regardless of roster math. This ensures programs always recruit
@@ -248,12 +253,12 @@ def _roster_value_score(recruit, coach):
         return sum(vals) / len(vals)
 
     score = 0
-    score += coach.get("values_athleticism",  5) * (avg("speed", "lateral_quickness", "vertical") / 20)
+    score += coach.get("values_athleticism",  5) * (avg("speed", "lateral_quickness", "vertical") / 1000)
     score += coach.get("values_iq",           5) * (avg("basketball_iq", "decision_making", "court_vision") / 20)
-    score += coach.get("values_size",         5) * (avg("rebounding", "strength") / 20)
-    score += coach.get("values_shooting",     5) * (avg("three_point", "catch_and_shoot", "free_throw") / 20)
-    score += coach.get("values_defense",      5) * (avg("on_ball_defense", "help_defense", "steal_tendency") / 20)
-    score += coach.get("values_toughness",    5) * (avg("strength", "rebounding") / 20)
+    score += coach.get("values_size",         5) * (avg("rebounding", "strength") / 1000)
+    score += coach.get("values_shooting",     5) * (avg("three_point", "catch_and_shoot", "free_throw") / 1000)
+    score += coach.get("values_defense",      5) * (avg("on_ball_defense", "help_defense", "steal_tendency") / 1000)
+    score += coach.get("values_toughness",    5) * (avg("strength", "rebounding") / 1000)
     score += coach.get("values_role_players", 5) * (avg("coachability", "work_ethic") / 20)
 
     max_possible = sum([
