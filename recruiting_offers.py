@@ -1,59 +1,74 @@
 import random
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Recruiting Offers & Interest v0.3
+# COLLEGE HOOPS SIM -- Recruiting Offers & Interest v0.5
 # System 3 of the Design Bible
 #
+# v0.5 CHANGES:
+#
+#   SPIKE SCOUT PASS
+#     After the normal star-range offer pass, every program runs a
+#     second pass -- the spike scout -- that scans the ENTIRE available
+#     pool regardless of star rating. If a recruit has one attribute
+#     that clears the program's spike threshold, they get an offer.
+#     Cap: 2 spike offers per position per program per cycle.
+#
+#     Spike threshold by prestige tier:
+#       elite:   720+  (Kentucky sees the elite shooter at #700)
+#       good:    680+
+#       average: 640+
+#       low:     600+
+#       bottom:  560+
+#
+#     Coach-values-aware: a pace-and-space coach scans for shooting
+#     spikes. A grinder scans for rebounding and defense spikes.
+#
+#   PRESTIGE SUPPRESSION
+#     A recruit with high priority_prestige has his interest in
+#     lower-prestige programs dampened when a better offer exists.
+#     Suppression scales with prestige gap and how much the recruit
+#     cares about prestige. Cap: 50% reduction.
+#
+#   COMMITTED RECRUITS SKIPPED
+#     Both offer passes skip committed recruits entirely.
+#     Their word is their bond.
+#
 # v0.4 CHANGES:
-#   - _roster_value_score() updated to normalize skill attributes
-#     against 1000 instead of 20. Mental attributes (basketball_iq,
-#     coachability, work_ethic) stay /20 -- they are still 1-20 scale.
-#
+#   - _roster_value_score() normalized against 1000 for skill attrs.
 # v0.3 CHANGES:
-#   - assess_roster_needs() now enforces a minimum class size of 3
-#     regardless of roster math. This ensures programs always recruit
-#     even when the position math returns low numbers on fresh rosters.
-#   - STAR_RANGE floors lowered: low/bottom programs now explicitly
-#     target 1-2 star recruits. Previously the floor was 1 but the
-#     offer logic never reached them because need was satisfied early.
-#   - OFFERS_PER_NEED raised for low/bottom tiers so 1-2 star recruits
-#     actually accumulate offers instead of sitting at zero.
-#   - Added MIN_CLASS_SIZE constant -- easy to tune.
-#
-# v0.2 CHANGES:
-#   - assess_roster_needs() reads actual roster instead of flat stub
-#   - generate_offers() is philosophy-aware (style fit + roster values)
-#   - playing_style interest score uses calculate_style_fit() from coach.py
-#   - _roster_value_score() helper added
+#   - MIN_CLASS_SIZE enforcement, STAR_RANGE floors, OFFERS_PER_NEED.
 # -----------------------------------------
 
 
-# How many offers per needed position per prestige tier
 OFFERS_PER_NEED = {
-    "elite":   15,   # 80+ prestige
-    "good":    12,   # 60-79
-    "average": 10,   # 40-59
-    "low":     12,   # 20-39  -- raised: must reach deep into 1-2 star pool
-    "bottom":  12,   # under 20 -- raised: cast wide net to survive
+    "elite":   15,
+    "good":    12,
+    "average": 10,
+    "low":     12,
+    "bottom":  12,
 }
 
-# Star range by prestige tier
 STAR_RANGE = {
-    "elite":   (3, 5),   # 3-5 star
-    "good":    (2, 5),   # 2-5 star -- widened to help fill rosters
-    "average": (2, 4),   # 2-4 star
-    "low":     (1, 3),   # 1-3 star -- explicit 1-star targeting
-    "bottom":  (1, 2),   # 1-2 star -- their realistic range
+    "elite":   (3, 5),
+    "good":    (2, 5),
+    "average": (2, 4),
+    "low":     (1, 3),
+    "bottom":  (1, 2),
 }
 
-# Target roster size
+SPIKE_THRESHOLD = {
+    "elite":   720,
+    "good":    680,
+    "average": 640,
+    "low":     600,
+    "bottom":  560,
+}
+
+SPIKE_OFFERS_PER_POSITION = 2
+
 TARGET_ROSTER_SIZE = 13
+MIN_CLASS_SIZE     = 3
 
-# Minimum class size -- programs always recruit at least this many
-# regardless of what the roster math returns.
-MIN_CLASS_SIZE = 3
-
-# Minimum players needed at each position on a full roster
 POSITION_MINIMUMS = {
     "PG": 2,
     "SG": 2,
@@ -62,7 +77,6 @@ POSITION_MINIMUMS = {
     "C":  2,
 }
 
-# Default class distribution when MIN_CLASS_SIZE kicks in
 DEFAULT_MIN_CLASS = {
     "PG": 1,
     "SG": 1,
@@ -77,20 +91,8 @@ DEFAULT_MIN_CLASS = {
 # -----------------------------------------
 
 def assess_roster_needs(program):
-    """
-    Returns how many players a program needs at each position this cycle.
-
-    Reads the actual roster -- counts returning players by position
-    (excluding seniors who graduate), then targets POSITION_MINIMUMS
-    and overall TARGET_ROSTER_SIZE.
-
-    Always recruits at least MIN_CLASS_SIZE players total. This prevents
-    the world from losing players every season on fresh rosters where the
-    position math returns artificially low numbers.
-    """
     roster = program.get("roster", [])
 
-    # Count returning players by position (non-seniors)
     returning = {}
     for pos in POSITION_MINIMUMS:
         returning[pos] = sum(
@@ -98,7 +100,6 @@ def assess_roster_needs(program):
             if p.get("position") == pos and p.get("year") != "Senior"
         )
 
-    # Count seniors by position -- these slots open after graduation
     seniors_by_pos = {}
     for pos in POSITION_MINIMUMS:
         seniors_by_pos[pos] = sum(
@@ -106,11 +107,9 @@ def assess_roster_needs(program):
             if p.get("position") == pos and p.get("year") == "Senior"
         )
 
-    # Total open slots after graduation
     total_returning = sum(returning.values())
     open_slots = max(0, TARGET_ROSTER_SIZE - total_returning)
 
-    # Build position needs
     if open_slots == 0:
         needs = {pos: 0 for pos in POSITION_MINIMUMS}
     else:
@@ -120,14 +119,11 @@ def assess_roster_needs(program):
             minimum          = POSITION_MINIMUMS[pos]
             needs[pos]       = max(0, minimum - after_graduation + seniors_by_pos[pos])
 
-        # Cap to open slots
         total_needs = sum(needs.values())
         if total_needs > open_slots:
             for pos in needs:
                 needs[pos] = max(0, round(needs[pos] * open_slots / total_needs))
 
-    # --- ENFORCE MINIMUM CLASS SIZE ---
-    # Always recruit at least MIN_CLASS_SIZE players.
     total_needs = sum(needs.values())
     if total_needs < MIN_CLASS_SIZE:
         shortfall = MIN_CLASS_SIZE - total_needs
@@ -142,7 +138,6 @@ def assess_roster_needs(program):
 
 
 def get_prestige_tier(prestige):
-    """Returns the prestige tier label for a program."""
     if prestige >= 80: return "elite"
     if prestige >= 60: return "good"
     if prestige >= 40: return "average"
@@ -151,24 +146,104 @@ def get_prestige_tier(prestige):
 
 
 # -----------------------------------------
+# SPIKE SCOUT HELPERS
+# -----------------------------------------
+
+# Applicable skill pairs -- BOTH attributes must clear threshold.
+# These represent complete, deployable skills a coach can actually use.
+# Single attributes don't count -- lateral_quickness alone doesn't
+# get you a Kentucky offer. Lateral quickness + on_ball_defense does.
+APPLICABLE_SKILL_PAIRS = {
+    "floor_spacer":       ("catch_and_shoot", "three_point"),
+    "perimeter_defender": ("on_ball_defense",  "lateral_quickness"),
+    "rim_protector":      ("shot_blocking",     "vertical"),
+    "rebounder":          ("rebounding",        "strength"),
+    "playmaker":          ("passing",           "court_vision"),
+    "finisher":           ("finishing",         "speed"),
+    "post_scorer":        ("post_scoring",      "finishing"),
+    "energy_big":         ("rebounding",        "help_defense"),
+}
+
+# Map coach values to which skill pairs they scout for
+COACH_VALUE_TO_PAIRS = {
+    "values_shooting":    ["floor_spacer"],
+    "values_athleticism": ["finisher", "perimeter_defender"],
+    "values_defense":     ["perimeter_defender", "rim_protector"],
+    "values_size":        ["rebounder", "rim_protector", "post_scorer"],
+    "values_iq":          ["playmaker"],
+    "values_toughness":   ["rebounder", "energy_big"],
+}
+
+
+def _get_skill_pairs_for_coach(coach):
+    """
+    Returns list of applicable skill pair names this coach scouts for,
+    ordered by how much the coach values that skill type.
+    """
+    if not coach:
+        return ["floor_spacer", "perimeter_defender", "rebounder", "finisher"]
+
+    value_keys = [
+        "values_shooting", "values_athleticism", "values_defense",
+        "values_size", "values_iq", "values_toughness",
+    ]
+    sorted_values = sorted(
+        value_keys,
+        key=lambda k: coach.get(k, 5),
+        reverse=True
+    )
+
+    skill_pairs = []
+    for val_key in sorted_values[:3]:
+        for pair_name in COACH_VALUE_TO_PAIRS.get(val_key, []):
+            if pair_name not in skill_pairs:
+                skill_pairs.append(pair_name)
+
+    return skill_pairs if skill_pairs else list(APPLICABLE_SKILL_PAIRS.keys())
+
+
+def _recruit_paired_spike_score(recruit, skill_pairs, threshold):
+    """
+    Checks if a recruit has a complete applicable skill.
+    Both attributes in ANY of the skill pairs must clear threshold.
+    Returns the highest paired value found, or 0 if nothing qualifies.
+    """
+    best = 0
+    for pair_name in skill_pairs:
+        pair = APPLICABLE_SKILL_PAIRS.get(pair_name)
+        if not pair:
+            continue
+        attr1, attr2 = pair
+        val1 = recruit.get(attr1, 0)
+        val2 = recruit.get(attr2, 0)
+        # Both must clear threshold
+        if isinstance(val1, int) and isinstance(val2, int):
+            if val1 >= threshold and val2 >= threshold:
+                # Score is the weaker of the two -- both matter
+                best = max(best, min(val1, val2))
+    return best
+
+
+# -----------------------------------------
 # OFFER GENERATION
 # -----------------------------------------
 
 def generate_offers(all_programs, recruiting_class):
     """
-    Main entry point. Programs identify needs and make offers.
+    Two-pass offer generation.
 
-    Philosophy-aware: coaches sort offer targets by a blend of
-    star rating, style fit, and roster values.
+    Pass 1: Normal star-range offers. Philosophy-aware sorting.
+    Pass 2: Spike scout. Scans all available recruits regardless of stars
+            for one elite attribute. Coach-values-aware. Cap: 2 per position.
 
-    v0.3: MIN_CLASS_SIZE ensures every program makes offers deep enough
-    into the pool to reach 1-2 star recruits.
+    Both passes skip committed recruits.
     """
     from coach import calculate_style_fit
 
-    # Build position lookup
     recruits_by_position = {}
     for recruit in recruiting_class:
+        if recruit["status"] != "available":
+            continue
         pos = recruit["position"]
         if pos not in recruits_by_position:
             recruits_by_position[pos] = []
@@ -180,12 +255,14 @@ def generate_offers(all_programs, recruiting_class):
         star_min, star_max = STAR_RANGE[tier]
         offers_per_need    = OFFERS_PER_NEED[tier]
         coach              = program.get("coach", {})
+        spike_threshold    = SPIKE_THRESHOLD[tier]
 
         needs = assess_roster_needs(program)
 
         if "recruiting_board" not in program:
             program["recruiting_board"] = []
 
+        # --- PASS 1: NORMAL STAR-RANGE OFFERS ---
         for position, need_count in needs.items():
             if need_count == 0:
                 continue
@@ -194,13 +271,11 @@ def generate_offers(all_programs, recruiting_class):
             eligible = [
                 r for r in position_pool
                 if star_min <= r["stars_consensus"] <= star_max
-                and r["status"] == "available"
             ]
 
             if not eligible:
                 continue
 
-            # Philosophy-aware sorting
             if coach:
                 scored = []
                 for r in eligible:
@@ -208,9 +283,9 @@ def generate_offers(all_programs, recruiting_class):
                     value_score = _roster_value_score(r, coach)
                     star_norm   = r["stars_consensus"] / 5.0
                     blend = (
-                        star_norm            * 0.60 +
-                        (style_score / 100.0)* 0.25 +
-                        (value_score / 10.0) * 0.15
+                        star_norm             * 0.60 +
+                        (style_score / 100.0) * 0.25 +
+                        (value_score / 10.0)  * 0.15
                     )
                     blend += random.uniform(-0.05, 0.05)
                     scored.append((r, blend))
@@ -225,18 +300,47 @@ def generate_offers(all_programs, recruiting_class):
             for recruit in eligible:
                 if offered_count >= total_offers:
                     break
-
-                program_name = program["name"]
-                if program_name not in recruit["offer_list"]:
-                    recruit["offer_list"].append(program_name)
-
-                recruit_id = recruit["name"] + "_" + str(recruit["season"])
-                if recruit_id not in program["recruiting_board"]:
-                    program["recruiting_board"].append(recruit_id)
-
+                _make_offer(recruit, program)
                 offered_count += 1
 
+        # --- PASS 2: SPIKE SCOUT ---
+        skill_pairs = _get_skill_pairs_for_coach(coach)
+
+        for position, need_count in needs.items():
+            if need_count == 0:
+                continue
+
+            position_pool = recruits_by_position.get(position, [])
+
+            spike_candidates = []
+            for r in position_pool:
+                if program["name"] in r["offer_list"]:
+                    continue
+                paired_score = _recruit_paired_spike_score(
+                    r, skill_pairs, spike_threshold
+                )
+                if paired_score > 0:
+                    spike_candidates.append((r, paired_score))
+
+            spike_candidates.sort(key=lambda x: x[1], reverse=True)
+
+            spike_offered = 0
+            for recruit, paired_score in spike_candidates:
+                if spike_offered >= SPIKE_OFFERS_PER_POSITION:
+                    break
+                _make_offer(recruit, program)
+                spike_offered += 1
+
     return all_programs, recruiting_class
+
+
+def _make_offer(recruit, program):
+    program_name = program["name"]
+    if program_name not in recruit["offer_list"]:
+        recruit["offer_list"].append(program_name)
+    recruit_id = recruit["name"] + "_" + str(recruit["season"])
+    if recruit_id not in program["recruiting_board"]:
+        program["recruiting_board"].append(recruit_id)
 
 
 # -----------------------------------------
@@ -244,10 +348,6 @@ def generate_offers(all_programs, recruiting_class):
 # -----------------------------------------
 
 def _roster_value_score(recruit, coach):
-    """
-    Scores a recruit against what this coach values in his roster.
-    Returns 1-10.
-    """
     def avg(*keys):
         vals = [recruit.get(k, 10) for k in keys]
         return sum(vals) / len(vals)
@@ -283,8 +383,9 @@ def _roster_value_score(recruit, coach):
 
 def calculate_interest_scores(all_programs, recruiting_class):
     """
-    After offers are made, each recruit calculates a base interest score
-    for every program that offered them.
+    Calculates base interest for each program that offered a recruit.
+    v0.5: Prestige suppression -- high prestige-priority recruits have
+    dampened interest in lower-prestige programs when a better offer exists.
     """
     programs_by_name = {p["name"]: p for p in all_programs}
 
@@ -292,35 +393,44 @@ def calculate_interest_scores(all_programs, recruiting_class):
         if not recruit["offer_list"]:
             continue
 
+        best_offer_prestige = max(
+            (programs_by_name[pn]["prestige_current"]
+             for pn in recruit["offer_list"]
+             if pn in programs_by_name),
+            default=0
+        )
+
         for program_name in recruit["offer_list"]:
             program = programs_by_name.get(program_name)
             if not program:
                 continue
 
             score = _calculate_base_interest(recruit, program)
+
+            prestige_priority = recruit.get("priority_prestige", 5)
+            this_prestige     = program["prestige_current"]
+            gap               = best_offer_prestige - this_prestige
+
+            if gap > 15 and prestige_priority >= 6:
+                suppression = (gap / 100.0) * (prestige_priority / 10.0) * 0.4
+                suppression = min(0.50, suppression)
+                score       = max(1, round(score * (1.0 - suppression)))
+
             recruit["interest_levels"][program_name] = score
 
     return all_programs, recruiting_class
 
 
 def _calculate_base_interest(recruit, program):
-    """
-    Calculates a recruit's base interest score for a single program.
-    Uses the recruit's eight hidden priority weights.
-    Normalized to 1-100.
-    """
     scores = {}
 
-    # --- PRESTIGE ---
     prestige = program["prestige_current"]
     scores["prestige"] = min(10, prestige / 10)
 
-    # --- PLAYING TIME ---
     needs    = assess_roster_needs(program)
     pos_need = needs.get(recruit["position"], 0)
     scores["playing_time"] = min(10, pos_need * 3 + random.randint(1, 3))
 
-    # --- LOCATION / FAMILY PROXIMITY ---
     recruit_state = recruit["home_state"]
     program_state = program["state"]
     if recruit_state == program_state:
@@ -332,11 +442,8 @@ def _calculate_base_interest(recruit, program):
 
     scores["location"]         = proximity_score
     scores["family_proximity"] = proximity_score
-
-    # --- COACH RELATIONSHIP ---
     scores["coach_relationship"] = random.randint(1, 3)
 
-    # --- PLAYING STYLE ---
     from coach import calculate_style_fit
     coach = program.get("coach", {})
     if coach:
@@ -345,13 +452,9 @@ def _calculate_base_interest(recruit, program):
     else:
         scores["playing_style"] = random.randint(3, 7)
 
-    # --- ACADEMICS ---
     scores["academics"] = min(10, program["venue_rating"] / 12)
+    scores["nil"]       = min(10, prestige / 11)
 
-    # --- NIL ---
-    scores["nil"] = min(10, prestige / 11)
-
-    # --- WEIGHTED TOTAL ---
     weighted_sum = (
         scores["prestige"]           * recruit["priority_prestige"] +
         scores["playing_time"]       * recruit["priority_playing_time"] +
@@ -382,7 +485,6 @@ def _calculate_base_interest(recruit, program):
 
 
 def _same_region(state1, state2):
-    """Returns True if two states are in the same broad geographic region."""
     regions = [
         {"CA", "OR", "WA", "AZ", "NV", "UT", "CO", "ID", "MT", "WY"},
         {"TX", "OK", "AR", "LA", "MS", "AL", "TN", "KY"},
@@ -403,17 +505,16 @@ def _same_region(state1, state2):
 # -----------------------------------------
 
 def print_offer_summary(all_programs, recruiting_class):
-    """Prints a summary of offers made across the whole recruiting class."""
-
-    total_offers  = sum(len(r["offer_list"]) for r in recruiting_class)
-    most_offered  = max(recruiting_class, key=lambda r: len(r["offer_list"]))
-    three_plus    = [r for r in recruiting_class if r["stars_consensus"] >= 3]
+    total_offers = sum(len(r["offer_list"]) for r in recruiting_class)
+    most_offered = max(recruiting_class, key=lambda r: len(r["offer_list"]))
+    three_plus   = [r for r in recruiting_class if r["stars_consensus"] >= 3]
     least_offered = min(three_plus, key=lambda r: len(r["offer_list"])) if three_plus else None
 
     print("")
     print("=== OFFER SUMMARY ===")
     print("  Total offers made: " + str(total_offers))
-    print("  Avg offers per recruit: " + str(round(total_offers / max(1, len(recruiting_class)), 1)))
+    print("  Avg offers per recruit: " +
+          str(round(total_offers / max(1, len(recruiting_class)), 1)))
     print("  Most offered: " + most_offered["name"] +
           " (" + str(len(most_offered["offer_list"])) + " offers)")
     if least_offered:
@@ -429,29 +530,24 @@ def print_offer_summary(all_programs, recruiting_class):
             print("    " + str(stars) + "-star: " + str(avg) + " offers avg")
 
     print("")
-    print("  Recruits with zero offers:")
     zero_offers = [r for r in recruiting_class if len(r["offer_list"]) == 0]
-    print("    Total: " + str(len(zero_offers)))
+    print("  Recruits with zero offers: " + str(len(zero_offers)))
     by_stars = {}
     for r in zero_offers:
         s = r["stars_consensus"]
         by_stars[s] = by_stars.get(s, 0) + 1
     for s in sorted(by_stars.keys(), reverse=True):
-        print("    " + str(s) + "-star: " + str(by_stars[s]) + " with no offers")
+        print("    " + str(s) + "-star with no offers: " + str(by_stars[s]))
 
 
 def print_recruit_offers(recruit, top_n=5):
-    """Prints the top programs interested in a recruit by interest score."""
     if not recruit["interest_levels"]:
         print("  " + recruit["name"] + ": no offers yet")
         return
-
     sorted_interest = sorted(
         recruit["interest_levels"].items(),
-        key=lambda x: x[1],
-        reverse=True
+        key=lambda x: x[1], reverse=True
     )
-
     print("")
     print("  " + recruit["name"] + " | " + recruit["position"] +
           " | " + str(recruit["stars_consensus"]) + "-star | " +
@@ -464,7 +560,6 @@ def print_recruit_offers(recruit, top_n=5):
 
 
 def print_program_board(program, recruiting_class, top_n=10):
-    """Prints a program's recruiting board."""
     board_ids = program.get("recruiting_board", [])
     if not board_ids:
         print("  " + program["name"] + ": no recruiting board yet")
@@ -487,26 +582,26 @@ def print_program_board(program, recruiting_class, top_n=10):
     print("")
     print("  === " + program["name"] + " Recruiting Board ===")
     print("  Prestige: " + str(program["prestige_current"]) +
-          " (" + program["prestige_grade"] + ")")
+          " (" + program.get("prestige_grade", "?") + ")")
     coach = program.get("coach", {})
     if coach:
-        print("  Coach archetype: " + coach.get("archetype", "unknown") +
-              "  |  values_shooting: " + str(coach.get("values_shooting", "?")) +
-              "  values_athleticism: " + str(coach.get("values_athleticism", "?")) +
+        print("  Coach: " + coach.get("archetype", "?") +
+              "  values_shooting: " + str(coach.get("values_shooting", "?")) +
               "  values_defense: " + str(coach.get("values_defense", "?")))
     print("  Board size: " + str(len(board_recruits)))
     print("")
-    print("  {:<22} {:<5} {:<7} {:<6} {}".format(
-        "Name", "Pos", "Stars", "State", "Interest"))
-    print("  " + "-" * 55)
+    print("  {:<22} {:<5} {:<7} {:<6} {:<10} {}".format(
+        "Name", "Pos", "Stars", "State", "Interest", "Note"))
+    print("  " + "-" * 62)
     for recruit, interest in board_recruits[:top_n]:
         from recruiting import stars_display
-        print("  {:<22} {:<5} {:<7} {:<6} {}".format(
-            recruit["name"],
-            recruit["position"],
+        note = "[spike]" if recruit["stars_consensus"] <= 2 else ""
+        print("  {:<22} {:<5} {:<7} {:<6} {:<10} {}".format(
+            recruit["name"], recruit["position"],
             stars_display(recruit["stars_consensus"]),
             recruit["home_state"],
-            str(interest) + "/100"
+            str(interest) + "/100",
+            note,
         ))
 
 
@@ -517,7 +612,8 @@ def print_program_board(program, recruiting_class, top_n=10):
 if __name__ == "__main__":
 
     from programs_data import build_all_d1_programs
-    from recruiting import generate_recruiting_class, stars_display
+    from recruiting import generate_recruiting_class, stars_display, POSITION_ARCHETYPES
+    from display import display_attr
 
     print("Loading programs and generating recruiting class...")
     all_programs     = build_all_d1_programs()
@@ -525,11 +621,10 @@ if __name__ == "__main__":
     print("Programs: " + str(len(all_programs)))
     print("Recruits: " + str(len(recruiting_class)))
 
-    print("")
-    print("Generating offers...")
+    print("Generating offers (v0.5 -- spike scout active)...")
     all_programs, recruiting_class = generate_offers(all_programs, recruiting_class)
 
-    print("Calculating interest scores...")
+    print("Calculating interest scores (v0.5 -- prestige suppression active)...")
     all_programs, recruiting_class = calculate_interest_scores(
         all_programs, recruiting_class
     )
@@ -547,6 +642,56 @@ if __name__ == "__main__":
     print_program_board(kentucky, recruiting_class, top_n=15)
     print_program_board(wagner,   recruiting_class, top_n=10)
 
+    # --- SPIKE SCOUT VERIFICATION ---
+    print("")
+    print("=== SPIKE SCOUT VERIFICATION ===")
+    print("  1-2 star recruits on Kentucky's board:")
+    board_ids = kentucky.get("recruiting_board", [])
+    recruit_lookup = {r["name"] + "_" + str(r["season"]): r
+                      for r in recruiting_class}
+    low_star_on_ky = []
+    for rid in board_ids:
+        r = recruit_lookup.get(rid)
+        if r and r["stars_consensus"] <= 2:
+            low_star_on_ky.append(r)
+    print("  Found: " + str(len(low_star_on_ky)))
+    for r in low_star_on_ky[:5]:
+        pos     = r["position"]
+        primary = POSITION_ARCHETYPES.get(pos, {}).get("primary", [])
+        top_attr = max(primary, key=lambda a: r.get(a, 0)) if primary else "?"
+        top_val  = r.get(top_attr, 0)
+        print("    " + r["name"].ljust(22) + r["position"] +
+              "  " + str(r["stars_consensus"]) + "-star" +
+              "  top attr: " + top_attr + " = " + str(top_val) +
+              " (" + display_attr(top_val, "letter") + ")")
+
+    # --- PRESTIGE SUPPRESSION CHECK ---
+    print("")
+    print("=== PRESTIGE SUPPRESSION CHECK ===")
+    programs_by_name = {p["name"]: p for p in all_programs}
+    suppressed_examples = []
+    for r in recruiting_class:
+        if r.get("priority_prestige", 0) < 7:
+            continue
+        if len(r["offer_list"]) < 2:
+            continue
+        best_pn  = max(r["offer_list"],
+                       key=lambda pn: programs_by_name.get(pn, {}).get("prestige_current", 0))
+        worst_pn = min(r["offer_list"],
+                       key=lambda pn: programs_by_name.get(pn, {}).get("prestige_current", 0))
+        best_p   = programs_by_name.get(best_pn, {}).get("prestige_current", 0)
+        worst_p  = programs_by_name.get(worst_pn, {}).get("prestige_current", 0)
+        if best_p - worst_p >= 30:
+            suppressed_examples.append((r, best_pn, worst_pn,
+                                        r["interest_levels"].get(best_pn, 0),
+                                        r["interest_levels"].get(worst_pn, 0)))
+
+    for r, best_pn, worst_pn, best_s, worst_s in suppressed_examples[:5]:
+        print("  " + r["name"].ljust(22) +
+              " pres_priority=" + str(r["priority_prestige"]) +
+              "  " + best_pn[:20] + " (" + str(best_s) + ")" +
+              "  vs  " + worst_pn[:20] + " (" + str(worst_s) + ")")
+
     print("")
     print("=== ROSTER NEED VERIFICATION ===")
     for program in [kentucky, wagner]:
@@ -555,19 +700,3 @@ if __name__ == "__main__":
         print("  " + program["name"] + " needs: " +
               "  ".join(pos + ": " + str(n) for pos, n in needs.items()) +
               "  (total: " + str(total_need) + ")")
-
-    print("")
-    print("=== 1-STAR AND 2-STAR SPOT CHECK ===")
-    one_stars = [r for r in recruiting_class if r["stars_consensus"] == 1]
-    two_stars = [r for r in recruiting_class if r["stars_consensus"] == 2]
-    print("  1-star recruits with at least 1 offer: " +
-          str(sum(1 for r in one_stars if len(r["offer_list"]) > 0)) +
-          " of " + str(len(one_stars)))
-    print("  2-star recruits with at least 1 offer: " +
-          str(sum(1 for r in two_stars if len(r["offer_list"]) > 0)) +
-          " of " + str(len(two_stars)))
-    print("")
-    print("  Sample 1-star recruits and their offers:")
-    for r in one_stars[:5]:
-        print("    " + r["name"].ljust(22) + r["position"] +
-              "  offers: " + str(len(r["offer_list"])))

@@ -449,10 +449,19 @@ ALL_D1_PROGRAMS = [
 
 def build_all_d1_programs():
     from program import create_program
+    from coach import ARCHETYPE_WEIGHTS
+
+    archetypes = list(ARCHETYPE_WEIGHTS.keys())
+    weights    = list(ARCHETYPE_WEIGHTS.values())
+
     programs = []
     for data in ALL_D1_PROGRAMS:
         prestige = calc_prestige(data["tourney"], data["ff"], data["titles"], data["conference"])
         gravity  = get_gravity(prestige, data["conference"])
+
+        # Pick archetype from the same weighted distribution used everywhere
+        archetype = random.choices(archetypes, weights=weights, k=1)[0]
+
         p = create_program(
             name=data["name"],
             nickname=data["nickname"],
@@ -465,6 +474,7 @@ def build_all_d1_programs():
             prestige_current=prestige,
             prestige_gravity=gravity,
             coach_name=get_coach_name(data["name"]),
+            coach_archetype=archetype,
         )
         programs.append(p)
     return programs

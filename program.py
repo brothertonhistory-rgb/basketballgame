@@ -57,7 +57,7 @@ def prestige_grade(score):
 
 def create_program(name, nickname, city, state, division, conference,
                    home_court, venue_rating, prestige_current,
-                   prestige_gravity, coach_name):
+                   prestige_gravity, coach_name, coach_archetype=None):
     """
     Creates a program object.
     This is the persistent identity of a school across all seasons.
@@ -66,6 +66,8 @@ def create_program(name, nickname, city, state, division, conference,
     prestige_gravity  -- historical anchor, pulls current toward it each season (1-100)
     gravity_pull_rate -- how fast current moves toward gravity (0.0 to 1.0)
                          0.05 = moves 5% of the gap each season (slow, realistic)
+    coach_archetype   -- optional coaching system string passed to generate_coach().
+                         None = weighted random from ARCHETYPE_WEIGHTS in coach.py.
     """
 
     if prestige_gravity >= 80:
@@ -75,9 +77,10 @@ def create_program(name, nickname, city, state, division, conference,
     else:
         gravity_pull_rate = 0.03
 
-    prestige_for_players = max(1, min(20, int(prestige_current / 5)))
-    roster_data = generate_team(name, prestige=prestige_for_players)
-    coach = generate_coach(coach_name, prestige=prestige_current)
+    # generate_team() takes prestige 1-100 directly (fixed in v0.4)
+    roster_data = generate_team(name, prestige=prestige_current)
+    coach       = generate_coach(coach_name, prestige=prestige_current,
+                                 archetype=coach_archetype)
 
     program = {
         # --- IDENTITY ---
