@@ -161,17 +161,18 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     """
     from roster_minutes import allocate_minutes
     from cohesion import update_cohesion
+    from game_engine import initialize_season_stats, finalize_season_stats
 
     # -------------------------------------------
-    # STEP 1: MINUTES ALLOCATION
+    # STEP 1: MINUTES ALLOCATION + STAT INIT
     # Must happen before games so cohesion is ready
     # On first season, also initialize cohesion at baseline
     # -------------------------------------------
     for program in all_programs:
         allocate_minutes(program)
-        # Initialize cohesion if not yet set (first season)
         if "cohesion_score" not in program:
             update_cohesion(program, previous_minutes=None)
+        initialize_season_stats(program, season_year=season_year)
 
     # -------------------------------------------
     # STEP 3: SEASON SIMULATION
@@ -225,7 +226,15 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         print("  Unsigned:        " + str(len(cycle_summary["unsigned"])))
 
     # -------------------------------------------
-    # STEP 5: LIFECYCLE -- graduation, aging, enrollment, cohesion
+    # STEP 5: FINALIZE SEASON STATS
+    # Must happen before lifecycle so graduating seniors
+    # get their career stats archived before they leave
+    # -------------------------------------------
+    for program in all_programs:
+        finalize_season_stats(program, season_year=season_year)
+
+    # -------------------------------------------
+    # STEP 6: LIFECYCLE -- graduation, aging, enrollment, cohesion
     # -------------------------------------------
     if verbose:
         print("")
