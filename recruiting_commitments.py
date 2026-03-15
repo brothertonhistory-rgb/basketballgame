@@ -1,48 +1,57 @@
 import random
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Recruiting Commitments v0.2
+# COLLEGE HOOPS SIM -- Recruiting Commitments v0.3
 # System 3 of the Design Bible
-# Commitment resolution -- recruits decide where to go
 #
-# Three phases mirror the real NCAA calendar:
-#   1. Early signing period (November)
-#   2. In-season (limited -- interest shifts only)
-#   3. Late signing period (April)
-#
-# All AI programs auto-resolve. Human player layer added later.
-#
-# CALIBRATION KNOBS -- adjust these to tune recruiting behavior:
+# v0.3 CHANGES:
+#   - Added PHASE 4: Emergency Signing Period.
+#     After late signing, any program projected to have fewer than
+#     ROSTER_FLOOR players forces a match with remaining unsigned recruits.
+#     Threshold dropped to near zero -- desperate programs take anyone.
+#     This acts as a hard floor enforcement: having fewer than 10 players
+#     is treated as a crisis and the system resolves it automatically.
+#   - MAX_CLASS_SIZE raised across all tiers so programs can absorb
+#     more players when the emergency period fires.
+#   - LATE_SIGNING_THRESHOLD lowered to 20 to let more recruits clear
+#     the normal late period before the emergency period is needed.
 # -----------------------------------------
 
-# How high interest must be to commit in each phase (1-100 scale)
-EARLY_SIGNING_THRESHOLD  = 58    # Moderate bar for early signing
-LATE_SIGNING_THRESHOLD   = 28    # Lowered -- more recruits find a home late
+# Signing thresholds (1-100 interest scale)
+EARLY_SIGNING_THRESHOLD  = 58
+LATE_SIGNING_THRESHOLD   = 20    # Lowered from 28 -- more recruits clear normally
 
 # Loyalty threshold for early committers
-# Recruits with loyalty >= this will commit early if interest is high enough
 EARLY_COMMITTER_LOYALTY_THRESHOLD = 10
 
-# How much in-season contact moves interest scores
-INSEASON_INTEREST_BUMP  = 3     # Max points interest can move per program
-INSEASON_INTEREST_DROP  = 1     # Passive decay if no contact
+# In-season contact movement
+INSEASON_INTEREST_BUMP = 3
+INSEASON_INTEREST_DROP = 1
 
-# Upset factor -- chance a lower-prestige program steals a recruit
-# 0.0 = never, 0.15 = occasionally
+# Upset factor
 UPSET_FACTOR = 0.08
 
-# Indecision rate -- fraction of recruits who delay even when threshold met
-INDECISION_RATE = 0.08   # Lowered -- fewer recruits stall out unsigned
+# Indecision rate
+INDECISION_RATE = 0.08
 
-# Max players a program can sign per cycle -- prevents hoarding
-# Raised across the board so rosters stay healthy after graduation
+# Max class size per prestige tier
+# Raised so programs can take more players when needed
 MAX_CLASS_SIZE = {
-    "elite":   6,    # 80+ prestige
-    "good":    6,    # 60-79
-    "average": 5,    # 40-59
-    "low":     5,    # 20-39
-    "bottom":  4,    # under 20
+    "elite":   7,    # 80+ prestige
+    "good":    7,    # 60-79
+    "average": 6,    # 40-59
+    "low":     6,    # 20-39
+    "bottom":  5,    # under 20
 }
+
+# Hard roster floor -- below this triggers the emergency signing period
+# Any program projected to end the cycle with fewer than this many players
+# will forcibly sign unsigned recruits until they hit this number.
+ROSTER_FLOOR = 10
+
+# Emergency signing threshold -- effectively zero resistance
+# Programs in crisis will take any available recruit at any position
+EMERGENCY_SIGNING_THRESHOLD = 5
 
 
 # -----------------------------------------
@@ -50,7 +59,6 @@ MAX_CLASS_SIZE = {
 # -----------------------------------------
 
 def _get_prestige_tier(prestige):
-    """Returns prestige tier label."""
     if prestige >= 80: return "elite"
     if prestige >= 60: return "good"
     if prestige >= 40: return "average"
@@ -59,25 +67,19 @@ def _get_prestige_tier(prestige):
 
 
 def _build_full_programs_set(programs_by_name):
-    """
-    Returns a set of program names that have hit their class size cap.
-    Called before each commit decision -- programs fill up mid-cycle.
-    """
+    """Returns set of program names that have hit their class size cap."""
     full = set()
     for name, program in programs_by_name.items():
         committed = program.get("committed_recruits", [])
         tier = _get_prestige_tier(program["prestige_current"])
-        cap  = MAX_CLASS_SIZE.get(tier, 4)
+        cap  = MAX_CLASS_SIZE.get(tier, 5)
         if len(committed) >= cap:
             full.add(name)
     return full
 
 
 def _get_top_interest(recruit, full_programs=None):
-    """
-    Returns (program_name, score) for the program a recruit is most
-    interested in that still has room in their class.
-    """
+    """Returns (program_name, score) for the program a recruit is most interested in."""
     if not recruit["interest_levels"]:
         return None, 0
     candidates = list(recruit["interest_levels"].items())
@@ -101,11 +103,7 @@ def _commit_recruit(recruit, program_name, programs_by_name):
 
 
 def _apply_upset_factor(recruit, top_program, programs_by_name, full_programs):
-    """
-    Occasionally a lower-prestige program wins a recruit
-    even when a higher-prestige program has more interest.
-    Driven by UPSET_FACTOR -- relationship can overcome prestige.
-    """
+    """Occasionally a lower-prestige program wins a recruit."""
     if random.random() > UPSET_FACTOR:
         return top_program
 
@@ -123,15 +121,25 @@ def _apply_upset_factor(recruit, top_program, programs_by_name, full_programs):
     return random.choices(choices, weights=weights, k=1)[0]
 
 
+def _projected_roster_size(program):
+    """
+    Estimates how many players this program will have after graduation
+    and after currently committed recruits enroll.
+    Used to determine if the emergency period should fire.
+    """
+    roster = program.get("roster", [])
+    returning = sum(1 for p in roster if p.get("year") != "Senior")
+    committed = len(program.get("committed_recruits", []))
+    return returning + committed
+
+
 # -----------------------------------------
 # PHASE 1 -- EARLY SIGNING PERIOD
 # -----------------------------------------
 
 def resolve_early_signing(all_programs, recruiting_class):
     """
-    Resolves the early signing period.
     Loyal recruits with high interest commit here.
-    Programs capped at MAX_CLASS_SIZE -- once full they stop receiving commits.
     Roughly 30-40% of eventual commits happen here.
     """
     early_commits    = []
@@ -143,21 +151,17 @@ def resolve_early_signing(all_programs, recruiting_class):
         if not recruit["interest_levels"]:
             continue
 
-        # Rebuild full set each time -- programs fill up during the loop
         full_programs = _build_full_programs_set(programs_by_name)
-
         is_early_committer = recruit["loyalty"] >= EARLY_COMMITTER_LOYALTY_THRESHOLD
         top_program, top_score = _get_top_interest(recruit, full_programs)
 
         if top_program is None:
             continue
 
-        # Non-loyal recruits need a higher bar to commit early
         threshold = EARLY_SIGNING_THRESHOLD
         if not is_early_committer:
             threshold += 10
 
-        # Indecision -- some recruits wait even when convinced
         if random.random() < INDECISION_RATE:
             continue
 
@@ -174,10 +178,9 @@ def resolve_early_signing(all_programs, recruiting_class):
 
 def resolve_inseason_shifts(all_programs, recruiting_class):
     """
-    Simulates limited in-season recruiting contact.
-    Top program maintains contact -- small interest bump.
-    Programs not in top 3 decay slightly.
-    Random event -- a program's great season can spike interest.
+    Limited in-season contact. Top program maintains interest.
+    Programs outside top 3 decay slightly.
+    Hot teams can spike interest.
     """
     programs_by_name = {p["name"]: p for p in all_programs}
 
@@ -187,14 +190,12 @@ def resolve_inseason_shifts(all_programs, recruiting_class):
         if not recruit["interest_levels"]:
             continue
 
-        # Top program keeps in contact
         top_program, _ = _get_top_interest(recruit)
         if top_program:
             current = recruit["interest_levels"].get(top_program, 0)
             bump = random.randint(1, INSEASON_INTEREST_BUMP)
             recruit["interest_levels"][top_program] = min(100, current + bump)
 
-        # Programs outside top 3 decay
         sorted_programs = sorted(
             recruit["interest_levels"].items(),
             key=lambda x: x[1], reverse=True
@@ -205,7 +206,6 @@ def resolve_inseason_shifts(all_programs, recruiting_class):
                     1, score - INSEASON_INTEREST_DROP
                 )
 
-        # Random event -- hot team spikes interest
         if random.random() < 0.10 and recruit["interest_levels"]:
             random_prog = random.choice(list(recruit["interest_levels"].keys()))
             program = programs_by_name.get(random_prog)
@@ -224,11 +224,8 @@ def resolve_inseason_shifts(all_programs, recruiting_class):
 
 def resolve_late_signing(all_programs, recruiting_class):
     """
-    Resolves the late signing period.
     All remaining unsigned recruits make a decision.
     Lower threshold -- recruits run out of time and options.
-    Programs still capped at MAX_CLASS_SIZE.
-    Recruits with no viable option go unsigned.
     """
     late_commits     = []
     unsigned         = []
@@ -262,6 +259,122 @@ def resolve_late_signing(all_programs, recruiting_class):
 
 
 # -----------------------------------------
+# PHASE 4 -- EMERGENCY SIGNING PERIOD
+# -----------------------------------------
+
+def resolve_emergency_signing(all_programs, recruiting_class):
+    """
+    Hard floor enforcement. Any program projected to end the cycle
+    with fewer than ROSTER_FLOOR players gets a forced match with
+    unsigned recruits regardless of interest score.
+
+    This models walk-ons, late signees, and emergency offers -- the
+    real-world phenomenon where programs fill rosters through any
+    available means. Having fewer than 10 players is treated as
+    a crisis. The program will take any available recruit at their
+    most needed position first, then any position.
+
+    Programs in the emergency period bypass MAX_CLASS_SIZE -- filling
+    the roster to the floor is more important than class size limits.
+    """
+    emergency_commits = []
+    programs_by_name  = {p["name"]: p for p in all_programs}
+
+    # Only unsigned recruits are available
+    available = [r for r in recruiting_class if r["status"] == "unsigned"
+                 or r["status"] == "available"]
+
+    if not available:
+        return all_programs, recruiting_class, emergency_commits
+
+    # Sort available recruits by true_talent desc -- programs get best available
+    available_by_position = {}
+    for r in available:
+        pos = r["position"]
+        if pos not in available_by_position:
+            available_by_position[pos] = []
+        available_by_position[pos].append(r)
+
+    # Sort each position pool by true_talent descending
+    for pos in available_by_position:
+        available_by_position[pos].sort(
+            key=lambda r: r["true_talent"], reverse=True
+        )
+
+    # Build a flat pool as fallback
+    flat_pool = sorted(available, key=lambda r: r["true_talent"], reverse=True)
+
+    for program in all_programs:
+        projected = _projected_roster_size(program)
+
+        if projected >= ROSTER_FLOOR:
+            continue
+
+        # This program is in crisis -- fill to ROSTER_FLOOR
+        slots_needed = ROSTER_FLOOR - projected
+
+        for _ in range(slots_needed):
+            # Try to find a recruit at a needed position first
+            filled = False
+            roster = program.get("roster", [])
+            pos_counts = {}
+            for p in roster:
+                pos = p.get("position", "SF")
+                pos_counts[pos] = pos_counts.get(pos, 0) + 1
+            for p in program.get("committed_recruits", []):
+                # We only have names here, not positions -- skip position logic
+                pass
+
+            # Try each position, most needed first
+            position_needs = {
+                "PG": max(0, 2 - pos_counts.get("PG", 0)),
+                "SG": max(0, 2 - pos_counts.get("SG", 0)),
+                "SF": max(0, 3 - pos_counts.get("SF", 0)),
+                "PF": max(0, 3 - pos_counts.get("PF", 0)),
+                "C":  max(0, 2 - pos_counts.get("C",  0)),
+            }
+            sorted_needs = sorted(
+                position_needs.items(), key=lambda x: x[1], reverse=True
+            )
+
+            for pos, need in sorted_needs:
+                if need <= 0:
+                    continue
+                pool = available_by_position.get(pos, [])
+                for recruit in pool:
+                    if recruit["status"] in ("available", "unsigned"):
+                        _commit_recruit(recruit, program["name"], programs_by_name)
+                        emergency_commits.append((recruit, program["name"]))
+                        pool.remove(recruit)
+                        # Also remove from flat pool
+                        if recruit in flat_pool:
+                            flat_pool.remove(recruit)
+                        filled = True
+                        break
+                if filled:
+                    break
+
+            # If no position-specific recruit found, take anyone
+            if not filled:
+                for recruit in flat_pool:
+                    if recruit["status"] in ("available", "unsigned"):
+                        _commit_recruit(recruit, program["name"], programs_by_name)
+                        emergency_commits.append((recruit, program["name"]))
+                        flat_pool.remove(recruit)
+                        pos = recruit["position"]
+                        pool = available_by_position.get(pos, [])
+                        if recruit in pool:
+                            pool.remove(recruit)
+                        filled = True
+                        break
+
+            if not filled:
+                break   # No recruits left anywhere
+
+    return all_programs, recruiting_class, emergency_commits
+
+
+# -----------------------------------------
 # FULL CYCLE RESOLVER
 # -----------------------------------------
 
@@ -271,7 +384,7 @@ def resolve_full_recruiting_cycle(all_programs, recruiting_class, verbose=True):
     Phase 1: Early signing
     Phase 2: In-season shifts
     Phase 3: Late signing
-    Returns (all_programs, recruiting_class, cycle_summary)
+    Phase 4: Emergency signing (hard roster floor enforcement)
     """
     if verbose:
         print("")
@@ -300,12 +413,21 @@ def resolve_full_recruiting_cycle(all_programs, recruiting_class, verbose=True):
     if verbose:
         print("  Late commits: " + str(len(late_commits)))
         print("  Unsigned:     " + str(len(unsigned)))
+        print("--- Recruiting Cycle: Emergency Signing Period ---")
+
+    all_programs, recruiting_class, emergency_commits = resolve_emergency_signing(
+        all_programs, recruiting_class
+    )
+
+    if verbose:
+        print("  Emergency commits: " + str(len(emergency_commits)))
 
     cycle_summary = {
-        "early_commits": early_commits,
-        "late_commits":  late_commits,
-        "unsigned":      unsigned,
-        "total_commits": len(early_commits) + len(late_commits),
+        "early_commits":     early_commits,
+        "late_commits":      late_commits,
+        "emergency_commits": emergency_commits,
+        "unsigned":          unsigned,
+        "total_commits":     len(early_commits) + len(late_commits) + len(emergency_commits),
     }
 
     return all_programs, recruiting_class, cycle_summary
@@ -316,28 +438,31 @@ def resolve_full_recruiting_cycle(all_programs, recruiting_class, verbose=True):
 # -----------------------------------------
 
 def print_cycle_summary(cycle_summary, recruiting_class, season_year):
-    """Prints a full recruiting cycle summary."""
-    total    = cycle_summary["total_commits"]
-    early    = len(cycle_summary["early_commits"])
-    late     = len(cycle_summary["late_commits"])
-    unsigned = len(cycle_summary["unsigned"])
+    total     = cycle_summary["total_commits"]
+    early     = len(cycle_summary["early_commits"])
+    late      = len(cycle_summary["late_commits"])
+    emergency = len(cycle_summary["emergency_commits"])
+    unsigned  = len(cycle_summary["unsigned"])
 
     print("")
     print("=" * 65)
     print("  " + str(season_year) + " RECRUITING CYCLE -- FINAL RESULTS")
     print("=" * 65)
-    print("  Total signed:  " + str(total))
-    print("  Early signing: " + str(early) +
+    print("  Total signed:     " + str(total))
+    print("  Early signing:    " + str(early) +
           " (" + str(round(early / max(1, total) * 100)) + "%)")
-    print("  Late signing:  " + str(late) +
+    print("  Late signing:     " + str(late) +
           " (" + str(round(late / max(1, total) * 100)) + "%)")
-    print("  Unsigned:      " + str(unsigned))
+    print("  Emergency period: " + str(emergency) +
+          " (" + str(round(emergency / max(1, total) * 100)) + "%)")
+    print("  Unsigned:         " + str(unsigned))
 
     print("")
     print("  Commits by star rating:")
     all_commits = (
         [(r, p) for r, p in cycle_summary["early_commits"]] +
-        [(r, p) for r, p in cycle_summary["late_commits"]]
+        [(r, p) for r, p in cycle_summary["late_commits"]] +
+        [(r, p) for r, p in cycle_summary["emergency_commits"]]
     )
     star_counts = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
     for recruit, _ in all_commits:
@@ -352,10 +477,8 @@ def print_cycle_summary(cycle_summary, recruiting_class, season_year):
     ]
     if five_star_commits:
         for recruit, program_name in five_star_commits:
-            signing = "early" if (recruit, program_name) in cycle_summary["early_commits"] else "late"
             print("    " + recruit["name"].ljust(22) +
-                  recruit["position"] + "  ->  " +
-                  program_name + " (" + signing + ")")
+                  recruit["position"] + "  ->  " + program_name)
     else:
         print("    (no five-stars committed this cycle)")
 
@@ -411,18 +534,19 @@ if __name__ == "__main__":
     print_cycle_summary(cycle_summary, recruiting_class, season_year=2025)
 
     print("")
-    print("=== SPOT CHECKS ===")
-    for recruit in recruiting_class[:10]:
-        status      = recruit["status"]
-        destination = recruit.get("committed_to", "unsigned")
-        print("  " + recruit["name"].ljust(22) +
-              str(recruit["stars_consensus"]) + "★  " +
-              status.ljust(12) + "  " +
-              (destination or ""))
+    print("=== ROSTER FLOOR VERIFICATION ===")
+    thin = [p for p in all_programs
+            if (sum(1 for pl in p.get("roster", []) if pl.get("year") != "Senior") +
+                len(p.get("committed_recruits", []))) < ROSTER_FLOOR]
+    print("  Programs still projected below " + str(ROSTER_FLOOR) +
+          " after emergency period: " + str(len(thin)))
+    if thin:
+        for p in thin[:10]:
+            projected = (sum(1 for pl in p.get("roster", []) if pl.get("year") != "Senior") +
+                         len(p.get("committed_recruits", [])))
+            print("    " + p["name"] + ": " + str(projected) + " projected")
 
-    programs_with_commits = [
-        p for p in all_programs if p.get("committed_recruits")
-    ]
     print("")
     print("Programs that signed at least one player: " +
-          str(len(programs_with_commits)) + " of " + str(len(all_programs)))
+          str(len([p for p in all_programs if p.get("committed_recruits")])) +
+          " of " + str(len(all_programs)))
