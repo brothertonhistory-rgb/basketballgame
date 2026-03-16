@@ -1,54 +1,66 @@
 import random
 from names import generate_player_name
-from player import rand_attr, _rand_mental, apply_freak_profile
+from player import (rand_attr, _rand_mental, apply_freak_profile,
+                    _generate_height, _generate_wingspan, _generate_weight,
+                    _generate_explosiveness, _generate_agility,
+                    _apply_height_athleticism_penalty, _derive_natural_position)
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Recruiting System v0.5
+# COLLEGE HOOPS SIM -- Recruiting System v0.6
 # System 3 of the Design Bible
 #
-# v0.5 CHANGES:
+# v0.6 CHANGES -- Outliers, Generational Talents, Height-Driven Athleticism
 #
-#   POOL SIZE: 1500 -> 4500
-#     Tier 1-5 (elite through fringe): 1500 players -- unchanged.
-#     Tier 6 (developmental): 1000 players -- true_talent 5-15.
-#       Walk-on territory at power programs. Scholarship at low D1.
-#     Tier 7 (depth pool): 2000 players -- true_talent 1-8.
-#       Pure stylistic variety. One identifiable thing. No rankings.
-#       The 6'6" tweener who posts up a little. The catch-and-shoot
-#       only guard. The rebounder who does nothing else.
-#       These exist so low-major coaches have real choices.
+#   PHYSICAL OUTLIERS:
+#     Short outlier (5'4"-5'8" PG): 1 in 800 recruits.
+#       Generates with guard skills but severe size disadvantage.
+#       The engine treats him exactly as his attributes say.
+#       At a low major he might still start. At a power program he's
+#       a 10-minute spark plug who gets cooked in the post.
 #
-#   RANKING STRUCTURE:
-#     Ranked (top 300): Full service coverage, composite rank displayed.
-#     Partial (301-500): Some service coverage, stars 2-3, rank shown.
-#     Unranked (501-1500): Stars 1-2, no composite rank. "NR".
-#     Developmental/depth (1501-4500): No service ratings. No rank.
-#       Internal true_talent only. Coaches find them by word of mouth.
+#     Tall outlier, no skills (7'3"-7'5" C): 1 in 600 recruits.
+#       Poor skills across the board. Low true_talent (10-25).
+#       Still affects games at low majors via sheer length_rating
+#       and rebound window. Gets destroyed by real post players.
+#       Most programs that sign him regret it by year two.
 #
-#   WEIGHTED SPIKE SELECTION:
-#     Spikes are no longer random.choice() -- they're weighted by
-#     position to reflect real basketball distributions.
-#     PG: shooters most common. SG: spot-up shooter most common.
-#     SF: slasher and three-and-d most common.
-#     PF/C: rebounders and post scorers most common.
+#     Tall outlier, real skills (7'3"-7'5" C): 1 in 15,000 recruits.
+#       A real player who happens to be enormous.
+#       true_talent 60-85. Skills seeded elite at one or two things.
+#       Still takes the full height athleticism penalty -- he's not
+#       athletic. But skill and size together at 7'4" is an event.
 #
-#   TALENT-TIER SPIKE RESTRICTIONS FOR BIGS:
-#     Fringe/low PF and C cannot roll stretch_four or stretch_five.
-#     Shooting bigs require talent to develop that skill.
-#     Post scoring stays available at ALL talent levels -- a big
-#     who can score is valuable almost no matter what.
+#   GENERATIONAL TALENTS:
+#     Two subtypes. Both extremely rare. Different discovery patterns.
 #
-#   PAIRED ATTRIBUTE GUARANTEE:
-#     Every spike specialization has a designated QUALIFYING PAIR --
-#     the first two attributes in the list. Both are guaranteed to
-#     clear the spike threshold. This ensures the scout check in
-#     recruiting_offers.py finds real applicable skills, not
-#     accidents of single-attribute variance.
+#     "phenom":
+#       1 in 33,000 recruits. ~1 every 10 seasons.
+#       Everyone knows. Arrives elite. True talent 95-100.
+#       2-3 primary attributes seeded 800-900 as a freshman.
+#       Arc type: overachiever or steady.
+#       Physical profile skewed toward exceptional but not guaranteed.
+#       Recruiting services go insane. Every blue blood goes all-in.
+#       The existing recruiting engine handles the frenzy naturally
+#       because his true_talent is so high every top program targets him.
 #
-# v0.4 CHANGES:
-#   - 1-1000 attribute scale throughout.
-# v0.3 CHANGES:
-#   - Pool expanded to 1500, spike system added.
+#     "late_bloomer_generational":
+#       1 in 50,000 recruits. ~1 every 15 seasons.
+#       Nobody saw it. Looks like a 3-star. Lands at a mid-major.
+#       True talent visible to scouts: 35-55 range.
+#       Attributes at arrival: solid but not elite.
+#       Arc type: always late_bloomer. Breakthrough multiplier 3x.
+#       Junior year he becomes the best player in the country.
+#       The flag itself is hidden -- no program knows what they have.
+#
+#   HEIGHT-DRIVEN ATHLETICISM:
+#     Recruit generation now passes height into athleticism generation.
+#     Every inch above 6'6" applies speed/explosiveness/agility penalties.
+#     The 7'0" space filler really is plodding. The 6'10" freak who
+#     beats the penalty is genuinely rare. This is what makes him special.
+#
+# v0.5 CHANGES (preserved):
+#   Pool size 4500, tier 6-7 depth pool, weighted spike selection,
+#   paired attribute guarantee, stretch big talent restriction.
 # -----------------------------------------
 
 
@@ -231,6 +243,20 @@ SERVICE_NOISE = {
     "ESPN":      (-14, 14),
 }
 
+# -----------------------------------------
+# OUTLIER AND GENERATIONAL TALENT RATES
+# Per-recruit probabilities. Pool is ~4500/season.
+# -----------------------------------------
+
+# Physical outlier rates (checked per recruit at generation)
+OUTLIER_SHORT_RATE       = 1 / 800      # 5'4"-5'8" PG/SG
+OUTLIER_TALL_NOSKILL_RATE = 1 / 600     # 7'3"-7'5" C, poor skills
+OUTLIER_TALL_SKILL_RATE  = 1 / 15000    # 7'3"-7'5" C, real skills
+
+# Generational talent rates
+GENERATIONAL_PHENOM_RATE      = 1 / 33000   # ~1 every 10 seasons
+GENERATIONAL_LATE_BLOOM_RATE  = 1 / 50000   # ~1 every 15 seasons
+
 
 def talent_to_stars(talent_score):
     if talent_score >= 90: return 5
@@ -238,6 +264,179 @@ def talent_to_stars(talent_score):
     if talent_score >= 55: return 3
     if talent_score >= 35: return 2
     return 1
+
+
+# -----------------------------------------
+# OUTLIER AND GENERATIONAL TALENT GENERATORS
+# -----------------------------------------
+
+def _check_outlier_and_generational(position):
+    """
+    Rolls for outlier physical profiles and generational talent flags.
+    Called once per recruit at generation. Most recruits return None, None.
+
+    Returns (outlier_type, generational_type) where both can be None.
+    Outlier types:   "short", "tall_noskill", "tall_skill"
+    Generational:    "phenom", "late_bloomer_generational"
+
+    Generational takes priority -- a phenom is never also flagged
+    as a short outlier. They're separate systems.
+    """
+    # Generational check first (rarest, highest priority)
+    roll = random.random()
+    if roll < GENERATIONAL_PHENOM_RATE:
+        return None, "phenom"
+    if roll < GENERATIONAL_PHENOM_RATE + GENERATIONAL_LATE_BLOOM_RATE:
+        return None, "late_bloomer_generational"
+
+    # Physical outlier checks -- position-gated
+    # Short outliers only make sense for guard positions
+    if position in ("PG", "SG"):
+        if random.random() < OUTLIER_SHORT_RATE:
+            return "short", None
+
+    # Tall outliers only for C (occasionally PF)
+    if position == "C" or (position == "PF" and random.random() < 0.2):
+        roll2 = random.random()
+        if roll2 < OUTLIER_TALL_SKILL_RATE:
+            return "tall_skill", None
+        elif roll2 < OUTLIER_TALL_SKILL_RATE + OUTLIER_TALL_NOSKILL_RATE:
+            return "tall_noskill", None
+
+    return None, None
+
+
+def _apply_outlier_physical(recruit, outlier_type, position):
+    """
+    Overrides height/wingspan/weight for physical outlier recruits.
+    Called after normal physical generation.
+    """
+    if outlier_type == "short":
+        # 5'4" to 5'8" -- true undersized guard
+        height  = random.randint(64, 68)
+        wingspan = max(63, height + random.randint(-2, 3))
+        weight  = random.randint(150, 175)
+        recruit["height_inches"] = height
+        recruit["weight_lbs"]    = weight
+        recruit["wingspan"]      = wingspan
+
+    elif outlier_type in ("tall_noskill", "tall_skill"):
+        # 7'3" to 7'5"
+        height   = random.randint(87, 89)
+        wingspan = min(96, height + random.randint(0, 6))
+        weight   = random.randint(230, 270)
+        recruit["height_inches"] = height
+        recruit["weight_lbs"]    = weight
+        recruit["wingspan"]      = wingspan
+
+    return recruit
+
+
+def _apply_outlier_attributes(attributes, outlier_type, position,
+                               true_talent, talent_factor):
+    """
+    Modifies skill attributes for physical outliers.
+
+    Short outlier: normal guard skill profile, no modifications needed.
+      The engine will punish him physically but his skills are real.
+
+    Tall no-skill: deliberately poor skills everywhere.
+      true_talent forced to 10-25 range.
+      He's on a D1 roster because he's 7'4", full stop.
+      Rebounds, blocks shots by existing, fouls out in 18 minutes
+      against anyone who can actually post up.
+
+    Tall skilled: real skills at one or two things.
+      true_talent 60-85. Primary attrs seeded elite.
+      Still takes full height athleticism penalty.
+      Different from generational -- skilled but not transcendent.
+    """
+    if outlier_type == "short":
+        # No attribute modification -- short guy with normal guard skills.
+        # Height penalty handled at engine time (Phase B).
+        pass
+
+    elif outlier_type == "tall_noskill":
+        # Deliberately poor everything except the things size gives you
+        for attr in ALL_ATTRIBUTES:
+            if attr in ("rebounding", "shot_blocking", "strength", "help_defense"):
+                # These are decent -- size helps here
+                attributes[attr] = rand_attr(380, spread=60)
+            elif attr in ("finishing",):
+                # Can catch and finish near the rim
+                attributes[attr] = rand_attr(300, spread=60)
+            else:
+                # Everything else is genuinely bad
+                attributes[attr] = rand_attr(150, spread=50)
+
+    elif outlier_type == "tall_skill":
+        # Start with normal generation (already done), then spike
+        # 1-2 primary attrs to elite level
+        primary_for_c = ["rebounding", "shot_blocking", "post_scoring",
+                         "finishing", "strength"]
+        num_elite = random.randint(1, 2)
+        chosen    = random.sample(primary_for_c, num_elite)
+        for attr in chosen:
+            attributes[attr] = rand_attr(720, spread=60)
+
+    return attributes
+
+
+def _apply_generational_attributes(recruit, generational_type, position,
+                                    attributes):
+    """
+    Stamps generational talent flag and modifies attributes/potential.
+
+    Phenom:
+      Arrives visibly special. true_talent 95-100.
+      2-3 primary attrs seeded 800-900.
+      Arc: overachiever or steady. Never busts.
+      Physical profile skewed exceptional but not required.
+
+    Late bloomer generational:
+      Arrives looking like a 3-star. true_talent to scouts: 35-55.
+      Attributes at arrival: solid but not elite.
+      Arc: always late_bloomer. Breakthrough multiplier 3x normal.
+      The flag is hidden -- no program knows what they have.
+      The generational_talent key exists on the player dict but
+      is not surfaced in any scouting report until he breaks out.
+    """
+    recruit["generational_talent"] = generational_type
+
+    if generational_type == "phenom":
+        # Force true talent to elite range
+        recruit["true_talent"]       = random.randint(95, 100)
+        recruit["potential_floor"]   = random.randint(85, 92)
+        recruit["potential_ceiling"] = random.randint(95, 100)
+        recruit["arc_type"]          = random.choice(["overachiever", "steady"])
+
+        # Seed 2-3 primary attributes elite
+        arch    = POSITION_ARCHETYPES.get(position, {})
+        primary = arch.get("primary", [])
+        num_elite = random.randint(2, 3)
+        chosen    = random.sample(primary, min(num_elite, len(primary)))
+        for attr in chosen:
+            if attr in ALL_ATTRIBUTES:
+                attributes[attr] = rand_attr(840, spread=40)
+
+        # Service ratings reflect the true talent
+        recruit["stars_consensus"] = 5
+        recruit["stars_247"]  = 5
+        recruit["stars_rivals"] = 5
+        recruit["stars_espn"] = 5
+
+    elif generational_type == "late_bloomer_generational":
+        # Looks ordinary to scouts
+        recruit["true_talent"]       = random.randint(35, 55)
+        recruit["potential_floor"]   = random.randint(40, 55)
+        recruit["potential_ceiling"] = random.randint(92, 100)
+        recruit["arc_type"]          = "late_bloomer"
+        # No attribute modification -- he looks like a normal 3-star.
+        # The breakthrough system will handle his explosion in year 3.
+        # The 3x breakthrough multiplier is applied in develop_player
+        # when the generational_talent flag is read. (Phase C hook)
+
+    return recruit, attributes
 
 
 # -----------------------------------------
@@ -250,6 +449,10 @@ def generate_recruit(position, true_talent, season,
     Generates a single recruit.
     is_ranked=False for developmental/depth pool players --
     no service ratings, no composite rank, coaches find by scouting.
+
+    v0.6: physical attributes now fully generated here and carried
+    through to _recruit_to_player() in lifecycle.py.
+    Outlier and generational checks happen at generation, not enrollment.
     """
     region_conf = conference_region or random.choice(
         list(STATE_TO_CONFERENCE_REGION.values())
@@ -260,13 +463,29 @@ def generate_recruit(position, true_talent, season,
     last_name  = name_parts[1] if len(name_parts) > 1 else "Smith"
 
     home_state = _pick_home_state()
-    size_range = POSITION_SIZE[position]
-    height     = random.randint(*size_range["height"])
-    weight     = random.randint(*size_range["weight"])
+
+    # --- CHECK FOR OUTLIER / GENERATIONAL ---
+    outlier_type, generational_type = _check_outlier_and_generational(position)
+
+    # --- GENERATE PHYSICAL SIZE ---
+    # Outlier height overridden after normal generation
+    height   = _generate_height(position)
+    wingspan = _generate_wingspan(height, position)
+    weight   = _generate_weight(position, "Freshman")
 
     attributes, spike_label = _generate_attributes(
         position, true_talent, is_ranked=is_ranked
     )
+
+    # Apply height-driven athleticism penalty to recruit attributes
+    ath_attrs = {k: attributes[k] for k in
+                 ["speed", "lateral_quickness", "strength", "vertical",
+                  "explosiveness", "agility"]
+                 if k in attributes}
+    if ath_attrs:
+        penalized = _apply_height_athleticism_penalty(ath_attrs, height)
+        attributes.update(penalized)
+
     potential_floor, potential_ceiling = _generate_potential(true_talent)
     personality = _generate_personality(true_talent)
     priorities  = _generate_priorities()
@@ -283,10 +502,27 @@ def generate_recruit(position, true_talent, season,
             service_ranks[service] = max(1, int((100 - true_talent) * 5 + rank_noise))
         stars_consensus = _consensus_stars(service_ratings)
     else:
-        # Developmental/depth players -- no service coverage
         service_ratings = {"247Sports": 0, "Rivals": 0, "ESPN": 0}
         service_ranks   = {"247Sports": 0, "Rivals": 0, "ESPN": 0}
-        stars_consensus = 1   # treated as 1-star for offer logic
+        stars_consensus = 1
+
+    # Add new v0.8 athleticism to attributes if not already there
+    if "explosiveness" not in attributes:
+        attributes["explosiveness"] = _generate_explosiveness(position)
+        attributes["explosiveness"] = max(1, min(950,
+            attributes["explosiveness"] +
+            _apply_height_athleticism_penalty(
+                {"explosiveness": attributes["explosiveness"]}, height
+            ).get("explosiveness", attributes["explosiveness"]) -
+            attributes["explosiveness"]
+        ))
+    if "agility" not in attributes:
+        attributes["agility"] = _generate_agility(position)
+
+    # New mental attributes
+    attributes["ball_dominance"]    = _rand_mental(3, 16)
+    attributes["usage_tendency"]    = _rand_mental(4, 15)
+    attributes["off_ball_movement"] = _rand_mental(3, 17)
 
     recruit = {
         "name":           name,
@@ -297,13 +533,17 @@ def generate_recruit(position, true_talent, season,
         "home_state":     home_state,
         "height_inches":  height,
         "weight_lbs":     weight,
+        "wingspan":       wingspan,
         "season":         season,
         "true_talent":       true_talent,
         "potential_floor":   potential_floor,
         "potential_ceiling": potential_ceiling,
+        "arc_type":          "steady",       # default; overridden below
         "spike_label":       spike_label,
         "is_ranked":         is_ranked,
-        "composite_rank":    None,   # assigned after pool is sorted
+        "composite_rank":    None,
+        "generational_talent": None,         # overridden if applicable
+        "outlier_type":      outlier_type,   # "short"/"tall_noskill"/"tall_skill"/None
         "stars_247":    service_ratings["247Sports"],
         "stars_rivals": service_ratings["Rivals"],
         "stars_espn":   service_ratings["ESPN"],
@@ -330,6 +570,37 @@ def generate_recruit(position, true_talent, season,
         "priority_nil":                priorities["nil"],
         "priority_family_proximity":   priorities["family_proximity"],
     }
+
+    # --- APPLY OUTLIER PHYSICAL OVERRIDES ---
+    if outlier_type:
+        recruit = _apply_outlier_physical(recruit, outlier_type, position)
+        attributes = _apply_outlier_attributes(
+            attributes, outlier_type, position, true_talent,
+            (true_talent - 1) / 99.0
+        )
+        # Re-stamp modified attributes
+        for k, v in attributes.items():
+            recruit[k] = v
+
+        # Adjust true_talent for no-skill tall outlier
+        if outlier_type == "tall_noskill":
+            recruit["true_talent"] = random.randint(10, 25)
+            recruit["stars_consensus"] = random.randint(1, 2)
+            recruit["is_ranked"] = recruit["true_talent"] >= 15
+
+    # --- APPLY GENERATIONAL TALENT ---
+    if generational_type:
+        recruit, attributes = _apply_generational_attributes(
+            recruit, generational_type, position, attributes
+        )
+        for k, v in attributes.items():
+            recruit[k] = v
+
+    # --- DERIVE NATURAL POSITION ---
+    # Build minimal player dict for natural position derivation
+    temp = {"height": recruit["height_inches"], "position": position}
+    temp.update(attributes)
+    recruit["natural_position"] = _derive_natural_position(temp)
 
     return recruit
 
@@ -417,6 +688,10 @@ def _generate_attributes(position, true_talent, is_ranked=True):
         endurance_bonus = int(talent_factor * 80)
         attributes["endurance"] = rand_attr(endurance_base + endurance_bonus, spread=80)
 
+    # v0.6: explosiveness and agility -- generated here, height penalty applied in caller
+    attributes["explosiveness"] = _generate_explosiveness(position)
+    attributes["agility"]       = _generate_agility(position)
+
     # Mental attributes -- same scale regardless of tier
     mental_base = 8 + int(talent_factor * 3) if is_ranked else 8
     attributes["basketball_iq"] = _rand_mental(mental_base, spread=3)
@@ -425,6 +700,10 @@ def _generate_attributes(position, true_talent, is_ranked=True):
     attributes["coachability"]  = _rand_mental(10, spread=3)
     attributes["work_ethic"]    = _rand_mental(10, spread=3)
     attributes["leadership"]    = _rand_mental(10, spread=3)
+    # v0.6 new mentals
+    attributes["ball_dominance"]    = _rand_mental(3, 16)
+    attributes["usage_tendency"]    = _rand_mental(4, 15)
+    attributes["off_ball_movement"] = _rand_mental(3, 17)
 
     # --- SPIKE SELECTION ---
     spike_label, spike_attrs = _pick_spike(position, true_talent, is_ranked)
@@ -801,8 +1080,134 @@ def print_class_summary(recruits, season, show_hidden=False):
 
 if __name__ == "__main__":
 
-    print("Generating 2025 recruiting class (v0.5 -- 4500 prospects)...")
+    print("Generating 2025 recruiting class (v0.6 -- 4500 prospects)...")
     recruits_2025 = generate_recruiting_class(season=2025)
+
+    print_class_summary(recruits_2025, season=2025, show_hidden=True)
+
+    print("")
+    print("=" * 65)
+    print("  POOL COMPOSITION VERIFICATION")
+    print("=" * 65)
+    ranked = [r for r in recruits_2025 if r["is_ranked"]]
+    depth  = [r for r in recruits_2025 if not r["is_ranked"]]
+    print("  Total pool:    " + str(len(recruits_2025)))
+    print("  Ranked pool:   " + str(len(ranked)) + "  (target: 1500)")
+    print("  Depth pool:    " + str(len(depth))  + "  (target: 3000)")
+    print("  With rank #:   " + str(sum(1 for r in recruits_2025
+                                        if r["composite_rank"] is not None)))
+    print("  NR (unranked): " + str(sum(1 for r in recruits_2025
+                                        if r["composite_rank"] is None)))
+
+    print("")
+    print("=" * 65)
+    print("  HEIGHT-DRIVEN ATHLETICISM CHECK")
+    print("  Taller players should have lower speed/explosiveness")
+    print("=" * 65)
+    from display import display_attr
+    print("  {:<8} {:<10} {:<8} {:<8} {:<8}".format(
+        "Height", "Position", "Speed", "Explo", "Strength"))
+    print("  " + "-" * 50)
+    height_sample = sorted(
+        [r for r in recruits_2025 if r["is_ranked"]][:200],
+        key=lambda r: r["height_inches"]
+    )
+    # Show bottom 5 (shortest) and top 5 (tallest)
+    for r in height_sample[:5] + height_sample[-5:]:
+        print("  {:<8} {:<10} {:<8} {:<8} {:<8}".format(
+            format_height(r["height_inches"]),
+            r["position"],
+            display_attr(r.get("speed", 400), "1-20"),
+            display_attr(r.get("explosiveness", 400), "1-20"),
+            display_attr(r.get("strength", 400), "1-20"),
+        ))
+
+    print("")
+    print("=" * 65)
+    print("  OUTLIER AND GENERATIONAL TALENT CHECK")
+    print("  Running 50 seasons to surface rare events...")
+    print("=" * 65)
+
+    short_outliers  = []
+    tall_noskill    = []
+    tall_skilled    = []
+    phenoms         = []
+    late_bloomers   = []
+
+    for season_n in range(2025, 2075):
+        class_n = generate_recruiting_class(season=season_n)
+        for r in class_n:
+            ot = r.get("outlier_type")
+            gt = r.get("generational_talent")
+            if ot == "short":         short_outliers.append((season_n, r))
+            elif ot == "tall_noskill": tall_noskill.append((season_n, r))
+            elif ot == "tall_skill":   tall_skilled.append((season_n, r))
+            if gt == "phenom":                    phenoms.append((season_n, r))
+            elif gt == "late_bloomer_generational": late_bloomers.append((season_n, r))
+
+    print("")
+    print("  Over 50 seasons (~{} recruits):".format(50 * 4500))
+    print("  Short outliers (5'4\"-5'8\"):     " + str(len(short_outliers)))
+    print("  Tall no-skill  (7'3\"-7'5\"):     " + str(len(tall_noskill)))
+    print("  Tall skilled   (7'3\"-7'5\"):     " + str(len(tall_skilled)))
+    print("  Phenoms:                         " + str(len(phenoms)))
+    print("  Late bloomer generationals:      " + str(len(late_bloomers)))
+
+    if short_outliers:
+        print("")
+        print("  SHORT OUTLIERS:")
+        for yr, r in short_outliers[:4]:
+            print("  " + str(yr) + "  " + r["name"].ljust(22) +
+                  r["position"] + "  " + format_height(r["height_inches"]) +
+                  "  tt:" + str(r["true_talent"]) +
+                  "  nat:" + r.get("natural_position", "?"))
+
+    if tall_noskill:
+        print("")
+        print("  TALL NO-SKILL (space fillers):")
+        for yr, r in tall_noskill[:4]:
+            print("  " + str(yr) + "  " + r["name"].ljust(22) +
+                  r["position"] + "  " + format_height(r["height_inches"]) +
+                  "  tt:" + str(r["true_talent"]) +
+                  "  reb:" + str(r.get("rebounding", 0)) +
+                  "  spd:" + str(r.get("speed", 0)))
+
+    if tall_skilled:
+        print("")
+        print("  TALL SKILLED (rare events):")
+        for yr, r in tall_skilled:
+            print("  " + str(yr) + "  " + r["name"].ljust(22) +
+                  r["position"] + "  " + format_height(r["height_inches"]) +
+                  "  tt:" + str(r["true_talent"]) +
+                  "  reb:" + str(r.get("rebounding", 0)) +
+                  "  post:" + str(r.get("post_scoring", 0)) +
+                  "  spd:" + str(r.get("speed", 0)) + " (penalized)")
+
+    if phenoms:
+        print("")
+        print("  PHENOMS (generational):")
+        for yr, r in phenoms:
+            print("  " + str(yr) + "  " + r["name"].ljust(22) +
+                  r["position"] + "  " + format_height(r["height_inches"]) +
+                  "  " + stars_display(r["stars_consensus"]) +
+                  "  tt:" + str(r["true_talent"]) +
+                  "  ceil:" + str(r["potential_ceiling"]) +
+                  "  nat:" + r.get("natural_position", "?"))
+
+    if late_bloomers:
+        print("")
+        print("  LATE BLOOMER GENERATIONALS (hidden talent):")
+        for yr, r in late_bloomers:
+            print("  " + str(yr) + "  " + r["name"].ljust(22) +
+                  r["position"] + "  " + stars_display(r["stars_consensus"]) +
+                  "  visible tt:" + str(r["true_talent"]) +
+                  "  true ceil:" + str(r["potential_ceiling"]) +
+                  "  arc:" + r.get("arc_type", "?"))
+
+    if not phenoms and not late_bloomers:
+        print("")
+        print("  No generational talents this run -- expected at these rates.")
+        print("  Expand to 200+ seasons to reliably surface them.")
 
     print_class_summary(recruits_2025, season=2025, show_hidden=True)
 

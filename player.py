@@ -3,33 +3,57 @@ import uuid
 from names import generate_player_name
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Player System v0.7
+# COLLEGE HOOPS SIM -- Player System v0.8
 # System 2 of the Design Bible
 #
-# v0.7 CHANGES -- Coaching Carousel Attributes:
+# v0.8 CHANGES -- Phase A: Physical Attributes
 #
-#   TWO new permanent attributes added to every player at creation:
+#   PHYSICAL SIZE (real units, NOT on 1-1000 scale):
+#     height   -- inches (68-87). Display layer converts to feet/inches.
+#     wingspan -- inches (67-92). Independent from height.
+#     weight   -- lbs (160-285). Position-appropriate distributions.
 #
-#   recruited_by  (int or None):
-#     The coach_id of the coach who recruited this player.
-#     Stamped at enrollment in lifecycle.py when a recruit is added
-#     to a roster. Players generated at world-build get the current
-#     coach's coach_id via ensure_player_carousel_attrs() migration.
-#     Used by coaching_carousel.py for:
-#       - portal wave probability (coach left = anchor gone)
-#       - poach check (coach pulling former players to new school)
-#     Never changes once set -- it's the relationship at signing.
+#   NEW ATHLETICISM ATTRIBUTES (1-1000 scale):
+#     explosiveness -- first-step burst. Different from speed.
+#                      Twitchy guards: high explosiveness, avg speed.
+#                      Long striders: high speed, avg explosiveness.
+#     agility       -- body control, balance. Finishing through contact,
+#                      defensive recovery, change of direction in space.
 #
-#   coach_loyalty (1-20):
-#     How personally attached this player is to a specific coach
-#     vs. the institution. Independent of home_loyalty.
-#     High = follows a coach anywhere. Low = committed to the school.
-#     Permanent identity trait -- never develops.
+#   NEW MENTAL ATTRIBUTES (1-20 scale):
+#     ball_dominance    -- permanent personality. How much a player
+#                          wants/demands the ball. Never develops much.
+#     usage_tendency    -- role acceptance. Can develop with great coaching.
+#                          High ball_dominance player CAN develop lower
+#                          usage_tendency over time.
+#     off_ball_movement -- reads defense, gets to right spot before
+#                          ball arrives. Critical for low-usage efficient
+#                          players. The dump-off finds him because he's
+#                          already there.
+#
+#   NATURAL POSITION (new field, never changes):
+#     natural_position -- "guard", "wing", "post", "guard/wing", "wing/post"
+#                         Derived from physical + skill profile at creation.
+#                         This is the recruiting/scouting descriptor.
+#                         "position" remains the coach's tactical label (PG-C).
+#                         In Phase B the engine will derive functional lineup
+#                         roles from the five players on the floor together.
+#
+#   PHYSICAL DEVELOPMENT (inside develop_player):
+#     Weight gain: 5-20 lbs over career as players fill out.
+#     Height growth: 8% chance freshman->sophomore, 2% sophomore->junior,
+#                    never after junior year.
+#     Strength tracks weight gain -- heavier players get stronger.
+#
+#   MIGRATION:
+#     ensure_player_physical_attrs() -- safe to call on existing players.
+#     Adds all v0.8 attributes without touching existing values.
+#
+# v0.7 CHANGES (preserved):
+#   recruited_by, coach_loyalty
 #
 # v0.6 CHANGES (preserved):
-#   Portal personality attributes (volatility, playing_time_hunger,
-#   home_loyalty, prestige_ambition, role_acceptance).
-#   home_state on every player.
+#   Portal personality attributes, home_state
 #
 # v0.5 CHANGES (preserved):
 #   Unique player_id on every player.
@@ -42,6 +66,9 @@ POSITIONS = ["PG", "SG", "SF", "PF", "C"]
 YEARS     = ["Freshman", "Sophomore", "Junior", "Senior"]
 ARC_TYPES = ["bust", "plateau", "steady", "overachiever", "late_bloomer"]
 
+# Natural position labels -- recruiting/scouting descriptor
+NATURAL_POSITIONS = ["guard", "guard/wing", "wing", "wing/post", "post"]
+
 # -----------------------------------------
 # PLAYER ID COUNTER
 # -----------------------------------------
@@ -53,6 +80,11 @@ def _next_player_id():
     return _PLAYER_ID_COUNTER[0]
 
 
+# -----------------------------------------
+# DEVELOPABLE ATTRIBUTES
+# explosiveness and agility added in v0.8
+# -----------------------------------------
+
 DEVELOPABLE_ATTRIBUTES = [
     "catch_and_shoot", "off_dribble", "mid_range", "three_point", "free_throw",
     "finishing", "post_scoring",
@@ -61,6 +93,7 @@ DEVELOPABLE_ATTRIBUTES = [
     "steal_tendency",
     "speed", "lateral_quickness", "strength", "vertical",
     "endurance",
+    "explosiveness", "agility",   # v0.8 additions
 ]
 
 NATURAL_ATTRIBUTES = {
@@ -133,10 +166,14 @@ def generate_portal_personality():
     }
 
 
+# -----------------------------------------
+# MIGRATION FUNCTIONS
+# -----------------------------------------
+
 def ensure_player_personality(player):
     """
     Retroactive migration. Adds portal personality, home_state,
-    and v0.7 carousel attributes if missing.
+    v0.7 carousel attributes, and v0.8 physical attributes if missing.
     Safe to call multiple times.
     """
     if "volatility" not in player:
@@ -152,7 +189,10 @@ def ensure_player_personality(player):
         player["coach_loyalty"] = _rand_mental(3, 15)
 
     if "recruited_by" not in player:
-        player["recruited_by"] = None   # set at enrollment; world-build uses migration
+        player["recruited_by"] = None
+
+    # v0.8 physical attributes
+    ensure_player_physical_attrs(player)
 
     return player
 
@@ -167,7 +207,50 @@ def ensure_player_carousel_attrs(player, coach_id=None):
         player["coach_loyalty"] = _rand_mental(3, 15)
 
     if "recruited_by" not in player:
-        player["recruited_by"] = coach_id   # None if no coach provided
+        player["recruited_by"] = coach_id
+
+    return player
+
+
+def ensure_player_physical_attrs(player):
+    """
+    v0.8 migration. Adds all new physical attributes to existing players.
+    Safe to call multiple times -- never overwrites existing values.
+
+    For existing players with no physical profile, generates based on
+    their position. Not perfect (we don't know their true height) but
+    good enough for continuity.
+    """
+    position = player.get("position", "SF")
+
+    # Physical size (real units)
+    if "height" not in player:
+        player["height"] = _generate_height(position)
+    if "wingspan" not in player:
+        player["wingspan"] = _generate_wingspan(player["height"], position)
+    if "weight" not in player:
+        player["weight"] = _generate_weight(position, player.get("year", "Sophomore"))
+
+    # New athleticism (1-1000)
+    if "explosiveness" not in player:
+        player["explosiveness"] = _generate_explosiveness(position)
+    if "agility" not in player:
+        player["agility"] = _generate_agility(position)
+
+    # New mental (1-20)
+    if "ball_dominance" not in player:
+        player["ball_dominance"] = _rand_mental(3, 16)
+    if "usage_tendency" not in player:
+        # Correlates loosely with ball_dominance but independent
+        bd = player["ball_dominance"]
+        base = max(1, min(20, bd + random.randint(-4, 4)))
+        player["usage_tendency"] = base
+    if "off_ball_movement" not in player:
+        player["off_ball_movement"] = _rand_mental(3, 17)
+
+    # Natural position
+    if "natural_position" not in player:
+        player["natural_position"] = _derive_natural_position(player)
 
     return player
 
@@ -307,6 +390,7 @@ def develop_player(player, coach, season_year,
     }
 
     _develop_endurance(player, coach, combined_dev)
+    _develop_physical(player)   # v0.8: weight gain, height growth
 
     return player, report
 
@@ -347,6 +431,272 @@ def _develop_endurance(player, coach, combined_dev):
         player["endurance"] = min(950, int(current_endurance + final_gain))
 
 
+def _develop_physical(player):
+    """
+    v0.8 -- Physical development each season transition.
+
+    Weight gain:
+      All players gain weight as they fill out in college.
+      Freshmen gain the most. Seniors gain little or none.
+      Gain range: 1-6 lbs per year, weighted toward lower end.
+
+    Height growth:
+      8% chance freshman->sophomore (they're still growing)
+      2% chance sophomore->junior (rare but happens)
+      Never after junior year
+
+    Strength tracks weight:
+      Each lb gained adds a small strength bonus.
+      The 180lb guy with elite strength still gets moved by
+      the 250lb guy -- but he gets stronger as he fills out.
+    """
+    year = player.get("year", "Freshman")
+
+    # --- WEIGHT GAIN ---
+    # Freshmen gain more (still developing), seniors almost none
+    weight_gain_by_year = {
+        "Freshman":  (2, 6),
+        "Sophomore": (1, 5),
+        "Junior":    (1, 4),
+        "Senior":    (0, 1),
+    }
+    lo, hi = weight_gain_by_year.get(year, (1, 3))
+    gain   = random.randint(lo, hi)
+
+    if gain > 0:
+        position    = player.get("position", "SF")
+        weight_cap  = _weight_cap(position)
+        old_weight  = player.get("weight", _generate_weight(position, year))
+        new_weight  = min(weight_cap, old_weight + gain)
+        player["weight"] = new_weight
+
+        # Strength bonus from filling out
+        # Each lb gained adds ~2-5 strength points (1-1000 scale)
+        if new_weight > old_weight:
+            lbs_gained     = new_weight - old_weight
+            strength_bonus = int(lbs_gained * random.uniform(2.0, 5.0))
+            current_str    = player.get("strength", 400)
+            player["strength"] = min(950, current_str + strength_bonus)
+
+    # --- HEIGHT GROWTH ---
+    # Only happens before junior year, and rarely
+    height_grow_chance = {
+        "Freshman":  0.08,   # 8% -- still growing
+        "Sophomore": 0.02,   # 2% -- rare
+        "Junior":    0.0,    # never
+        "Senior":    0.0,    # never
+    }
+    chance = height_grow_chance.get(year, 0.0)
+    if chance > 0 and random.random() < chance:
+        old_height      = player.get("height", 74)
+        position        = player.get("position", "SF")
+        height_cap      = _height_cap(position)
+        new_height      = min(height_cap, old_height + 1)
+        player["height"] = new_height
+
+        # Wingspan may grow slightly with height
+        if random.random() < 0.5:
+            old_ws = player.get("wingspan", old_height)
+            player["wingspan"] = min(92, old_ws + 1)
+
+
+# -----------------------------------------
+# PHYSICAL ATTRIBUTE GENERATORS (v0.8)
+# -----------------------------------------
+
+def _generate_height(position):
+    """
+    Generates height in inches from position-appropriate distribution.
+    Uses gaussian around position mean with realistic spread.
+
+    Real D1 averages (approximate):
+      PG: 6'2" (74")  SG: 6'4" (76")  SF: 6'7" (79")
+      PF: 6'8" (80")  C:  6'10" (82")
+    """
+    params = {
+        "PG": (74.0, 1.8),   # mean 6'2", sd ~2"
+        "SG": (76.0, 1.8),   # mean 6'4"
+        "SF": (79.0, 1.5),   # mean 6'7"
+        "PF": (80.5, 1.5),   # mean 6'8.5"
+        "C":  (82.5, 1.5),   # mean 6'10.5"
+    }
+    mean, sd = params.get(position, (78.0, 2.0))
+    raw = int(round(random.gauss(mean, sd)))
+
+    # Hard floor/ceiling per position
+    floors   = {"PG": 68, "SG": 70, "SF": 74, "PF": 76, "C": 78}
+    ceilings = {"PG": 79, "SG": 81, "SF": 83, "PF": 85, "C": 87}
+
+    return max(floors.get(position, 68), min(ceilings.get(position, 87), raw))
+
+
+def _height_cap(position):
+    """Maximum height a player can reach (growth cap)."""
+    return {"PG": 79, "SG": 81, "SF": 83, "PF": 85, "C": 87}.get(position, 83)
+
+
+def _generate_wingspan(height, position):
+    """
+    Generates wingspan in inches. Independent from height.
+    Most players are within +/- 3" of height.
+    Elite length (wingspan >> height) is rare and valuable.
+
+    Wingspan relative to height (design spec):
+      wingspan > height + 3: exceptional. Bonus to contests, steals.
+      wingspan ~ height:     average. No bonus or penalty.
+      wingspan < height - 2: short arms. Penalty to contesting, post D.
+    """
+    # Most players are close to their height
+    # Slight position bias: big men more likely to have long arms
+    position_bias = {"PG": -0.5, "SG": 0.0, "SF": 0.5, "PF": 1.0, "C": 1.5}
+    bias = position_bias.get(position, 0.0)
+
+    # Gaussian centered at height + bias, spread ~2.5"
+    raw = int(round(random.gauss(height + bias, 2.5)))
+
+    # Hard floor/ceiling -- real human range
+    return max(height - 5, min(height + 9, max(67, min(92, raw))))
+
+
+def _generate_weight(position, year="Freshman"):
+    """
+    Generates weight in lbs from position-appropriate distribution.
+    Freshmen arrive lighter -- they haven't filled out yet.
+    Uses gaussian around position mean.
+
+    Real D1 averages (approximate):
+      PG: 185  SG: 195  SF: 215  PF: 230  C: 250
+    """
+    params = {
+        "PG": (185, 12),
+        "SG": (195, 12),
+        "SF": (215, 15),
+        "PF": (230, 15),
+        "C":  (250, 18),
+    }
+    mean, sd = params.get(position, (210, 15))
+
+    # Freshmen arrive 5-12 lbs lighter
+    freshman_penalty = {"Freshman": random.randint(5, 12), "Sophomore": random.randint(2, 6)}
+    mean -= freshman_penalty.get(year, 0)
+
+    raw = int(round(random.gauss(mean, sd)))
+
+    floors   = {"PG": 160, "SG": 165, "SF": 185, "PF": 195, "C": 210}
+    ceilings = {"PG": 215, "SG": 225, "SF": 245, "PF": 260, "C": 285}
+
+    return max(floors.get(position, 160), min(ceilings.get(position, 285), raw))
+
+
+def _weight_cap(position):
+    """Maximum weight a player can reach."""
+    return {"PG": 215, "SG": 225, "SF": 245, "PF": 260, "C": 285}.get(position, 245)
+
+
+def _generate_explosiveness(position):
+    """
+    First-step burst. Different from speed.
+    Guards and wings tend to be more explosive.
+    Bigs can be explosive too -- just rare.
+    """
+    bases = {"PG": 450, "SG": 440, "SF": 410, "PF": 360, "C": 300}
+    return rand_attr(bases.get(position, 380), spread=55)
+
+
+def _generate_agility(position):
+    """
+    Body control, balance, change of direction in space.
+    Guards have highest agility. Bigs less so.
+    Affects finishing through contact, defensive recovery.
+    """
+    bases = {"PG": 440, "SG": 430, "SF": 410, "PF": 360, "C": 300}
+    return rand_attr(bases.get(position, 380), spread=55)
+
+
+# -----------------------------------------
+# NATURAL POSITION DERIVATION (v0.8)
+# -----------------------------------------
+
+def _derive_natural_position(player):
+    """
+    Derives natural_position from physical + skill profile.
+    Returns one of: "guard", "guard/wing", "wing", "wing/post", "post"
+
+    Logic:
+      Primary driver: height
+      Secondary: skill profile (ball handling, post, etc.)
+      Result: the scouting/recruiting descriptor, not the tactical label.
+
+    Hybrids are the most interesting cases:
+      6'5" with elite ball handling -> "guard/wing"
+      6'7" with post skills         -> "wing/post"
+      6'6" balanced                 -> "wing"
+    """
+    height       = player.get("height", 74)
+    ball_handling = player.get("ball_handling", 400)
+    post_scoring  = player.get("post_scoring", 300)
+    passing       = player.get("passing", 350)
+    finishing     = player.get("finishing", 400)
+
+    # Guard skill score: ball handling + passing
+    guard_skill = (ball_handling + passing) / 2.0
+    # Post skill score: post scoring + finishing (for bigs)
+    post_skill  = (post_scoring + finishing) / 2.0
+
+    # --- HEIGHT-FIRST CLASSIFICATION ---
+    # Then skill profile pushes toward hybrid categories
+
+    if height <= 73:
+        # 6'1" and under -- almost certainly a guard
+        # Only extreme post skill would push toward wing
+        if post_skill > 550 and height >= 72:
+            return "guard/wing"
+        return "guard"
+
+    elif height <= 76:
+        # 6'2" to 6'4"
+        if guard_skill >= 450:
+            return "guard"          # true PG/SG size, has the skills
+        elif guard_skill >= 380:
+            return "guard/wing"     # tweener guard
+        else:
+            return "guard/wing"     # undersized wing
+
+    elif height <= 78:
+        # 6'5" to 6'6"
+        if guard_skill >= 480:
+            return "guard/wing"     # oversized guard, still handles
+        elif post_skill >= 450:
+            return "wing/post"      # athletic forward type
+        else:
+            return "wing"           # natural wing
+
+    elif height <= 81:
+        # 6'7" to 6'9"
+        if guard_skill >= 460:
+            return "guard/wing"     # point forward type
+        elif post_skill >= 480:
+            return "wing/post"      # big wing, posts up
+        else:
+            return "wing"           # true wing/SF
+
+    elif height <= 83:
+        # 6'10" to 6'11"
+        if guard_skill >= 440:
+            return "wing/post"      # skilled big, handles on perimeter
+        elif post_skill >= 430:
+            return "post"           # true post player
+        else:
+            return "wing/post"      # stretch big type
+
+    else:
+        # 7'0" and above -- post regardless of skills
+        # (a 7-footer with guard skills is still a post/wing/post)
+        if guard_skill >= 400:
+            return "wing/post"      # unicorn big
+        return "post"
+
+
 # -----------------------------------------
 # PLAYER GENERATOR
 # -----------------------------------------
@@ -356,11 +706,16 @@ def create_player(name, position, year, conference="",
                   playmaking=None, athleticism=None, mental=None,
                   potential=None, heritage=None):
 
+    # Generate physical size first -- height feeds into athleticism penalty
+    height   = _generate_height(position)
+    wingspan = _generate_wingspan(height, position)
+    weight   = _generate_weight(position, year)
+
     if shooting    is None: shooting    = generate_shooting(position)
     if defense     is None: defense     = generate_defense(position)
     if rebounding  is None: rebounding  = generate_rebounding(position)
     if playmaking  is None: playmaking  = generate_playmaking(position)
-    if athleticism is None: athleticism = generate_athleticism(position)
+    if athleticism is None: athleticism = generate_athleticism(position, height=height)
     if mental      is None: mental      = generate_mental()
     if potential   is None: potential   = generate_potential()
 
@@ -374,6 +729,7 @@ def create_player(name, position, year, conference="",
 
     personality = generate_portal_personality()
 
+    # Build the player dict -- then derive natural position from full profile
     player = {
         # --- IDENTITY ---
         "player_id": _next_player_id(),
@@ -384,6 +740,11 @@ def create_player(name, position, year, conference="",
 
         # --- GEOGRAPHY ---
         "home_state": _pick_home_state(),
+
+        # --- PHYSICAL SIZE (real units, v0.8) ---
+        "height":   height,    # inches
+        "wingspan": wingspan,  # inches
+        "weight":   weight,    # lbs
 
         # --- SKILL ATTRIBUTES (1-1000) ---
         "catch_and_shoot": shooting["catch_and_shoot"],
@@ -406,11 +767,16 @@ def create_player(name, position, year, conference="",
         "steal_tendency":  defense["steal_tendency"],
         "foul_tendency":   defense["foul_tendency"],
 
+        # --- ATHLETICISM (1-1000) ---
         "speed":             athleticism["speed"],
         "lateral_quickness": athleticism["lateral_quickness"],
         "strength":          athleticism["strength"],
         "vertical":          athleticism["vertical"],
         "endurance":         athleticism["endurance"],
+        "explosiveness":     athleticism.get("explosiveness",
+                                 _generate_explosiveness(position)),
+        "agility":           athleticism.get("agility",
+                                 _generate_agility(position)),
 
         # --- MENTAL ATTRIBUTES (1-20) ---
         "basketball_iq": mental["basketball_iq"],
@@ -420,6 +786,11 @@ def create_player(name, position, year, conference="",
         "work_ethic":    mental["work_ethic"],
         "leadership":    mental["leadership"],
 
+        # --- NEW MENTAL ATTRIBUTES (1-20, v0.8) ---
+        "ball_dominance":    mental.get("ball_dominance",    _rand_mental(3, 16)),
+        "usage_tendency":    mental.get("usage_tendency",    _rand_mental(4, 15)),
+        "off_ball_movement": mental.get("off_ball_movement", _rand_mental(3, 17)),
+
         # --- PORTAL PERSONALITY (1-20, permanent identity) ---
         "volatility":           personality["volatility"],
         "playing_time_hunger":  personality["playing_time_hunger"],
@@ -428,9 +799,7 @@ def create_player(name, position, year, conference="",
         "role_acceptance":      personality["role_acceptance"],
 
         # --- CAROUSEL ATTRIBUTES (v0.7) ---
-        # recruited_by: stamped at enrollment. None at world-build until migration runs.
         "recruited_by":  None,
-        # coach_loyalty: permanent. How much they follow a coach vs. the school.
         "coach_loyalty": _rand_mental(3, 15),
 
         # --- POTENTIAL ---
@@ -443,6 +812,9 @@ def create_player(name, position, year, conference="",
         "foul_count": 0,
         "in_game":    True,
     }
+
+    # Derive natural position from completed profile
+    player["natural_position"] = _derive_natural_position(player)
 
     return player
 
@@ -595,39 +967,114 @@ def generate_playmaking(position):
         }
 
 
-def generate_athleticism(position):
+def generate_athleticism(position, height=None):
+    """
+    v0.8: includes explosiveness and agility.
+    Height-driven athleticism penalty applied when height is provided.
+
+    Every inch above 78" (6'6") costs speed, lateral quickness,
+    explosiveness and agility. Strength gets a small bonus.
+    Vertical takes a partial penalty.
+
+    This is what makes the 6'10" ultra-athlete so rare and impactful --
+    he's rolling good numbers against a penalty that drags most bigs down.
+    The typical 7'0" center has genuinely poor athleticism. He's there
+    for his size, shot blocking, and rebounding window. Nothing else.
+
+    Penalty per inch above 78":
+      speed:             -10  (range: -0 to -90 for a 7'3" guy)
+      lateral_quickness: -10
+      explosiveness:     -12
+      agility:           -10
+      vertical:          -5   (partial -- bigs can still jump)
+      strength:          +5   (bonus -- size builds strength)
+    """
     if position in ("PG", "SG"):
-        return {
+        base = {
             "speed":             rand_attr(470),
             "lateral_quickness": rand_attr(450),
             "strength":          rand_attr(320),
             "vertical":          rand_attr(420),
             "endurance":         rand_attr(460),
+            "explosiveness":     _generate_explosiveness(position),
+            "agility":           _generate_agility(position),
         }
     elif position == "SF":
-        return {
+        base = {
             "speed":             rand_attr(430),
             "lateral_quickness": rand_attr(410),
             "strength":          rand_attr(380),
             "vertical":          rand_attr(430),
             "endurance":         rand_attr(450),
+            "explosiveness":     _generate_explosiveness(position),
+            "agility":           _generate_agility(position),
         }
     elif position == "PF":
-        return {
+        base = {
             "speed":             rand_attr(350),
             "lateral_quickness": rand_attr(340),
             "strength":          rand_attr(460),
             "vertical":          rand_attr(400),
             "endurance":         rand_attr(430),
+            "explosiveness":     _generate_explosiveness(position),
+            "agility":           _generate_agility(position),
         }
     else:  # C
-        return {
+        base = {
             "speed":             rand_attr(280),
             "lateral_quickness": rand_attr(270),
             "strength":          rand_attr(510),
             "vertical":          rand_attr(370),
             "endurance":         rand_attr(420),
+            "explosiveness":     _generate_explosiveness(position),
+            "agility":           _generate_agility(position),
         }
+
+    # Apply height-driven penalty if height provided
+    if height is not None:
+        base = _apply_height_athleticism_penalty(base, height)
+
+    return base
+
+
+def _apply_height_athleticism_penalty(attrs, height):
+    """
+    Penalizes athleticism attributes for players taller than 6'6" (78").
+    Called from generate_athleticism() and recruit generation.
+
+    The penalty is the core reason why the athletic 6'10" guy is special.
+    Most players his size are rolling heavily penalized numbers. He beat
+    the penalty through the natural gaussian variance -- a legitimate freak.
+
+    Per inch above 78":
+      speed:             -10
+      lateral_quickness: -10
+      explosiveness:     -12
+      agility:           -10
+      vertical:           -5
+      strength:           +5  (bonus)
+    """
+    HEIGHT_THRESHOLD = 78   # 6'6"
+    inches_over = max(0, height - HEIGHT_THRESHOLD)
+
+    if inches_over == 0:
+        return attrs
+
+    penalties = {
+        "speed":             -10 * inches_over,
+        "lateral_quickness": -10 * inches_over,
+        "explosiveness":     -12 * inches_over,
+        "agility":           -10 * inches_over,
+        "vertical":           -5 * inches_over,
+        "strength":           +5 * inches_over,   # bonus
+    }
+
+    result = dict(attrs)
+    for attr, delta in penalties.items():
+        if attr in result:
+            result[attr] = max(1, min(950, result[attr] + delta))
+
+    return result
 
 
 def _rand_mental(low, high=None, spread=None):
@@ -640,12 +1087,16 @@ def _rand_mental(low, high=None, spread=None):
 
 def generate_mental():
     return {
-        "basketball_iq": _rand_mental(5, 18),
-        "clutch":        _rand_mental(4, 18),
-        "composure":     _rand_mental(4, 18),
-        "coachability":  _rand_mental(4, 20),
-        "work_ethic":    _rand_mental(4, 20),
-        "leadership":    _rand_mental(3, 16),
+        "basketball_iq":    _rand_mental(5, 18),
+        "clutch":           _rand_mental(4, 18),
+        "composure":        _rand_mental(4, 18),
+        "coachability":     _rand_mental(4, 20),
+        "work_ethic":       _rand_mental(4, 20),
+        "leadership":       _rand_mental(3, 16),
+        # v0.8 new mental attributes
+        "ball_dominance":   _rand_mental(3, 16),
+        "usage_tendency":   _rand_mental(4, 15),
+        "off_ball_movement": _rand_mental(3, 17),
     }
 
 
@@ -795,53 +1246,111 @@ def get_team_ratings(program):
 
 
 # -----------------------------------------
+# DISPLAY HELPERS (v0.8)
+# -----------------------------------------
+
+def display_height(inches):
+    """Converts inches to feet'inches" string. E.g. 79 -> 6'7\""""
+    feet   = inches // 12
+    remain = inches % 12
+    return str(feet) + "'" + str(remain) + '"'
+
+
+def display_physical(player):
+    """Returns a readable physical profile string for a player."""
+    h  = player.get("height",   74)
+    ws = player.get("wingspan", 74)
+    w  = player.get("weight",   200)
+    np = player.get("natural_position", "?")
+    ws_diff = ws - h
+    ws_note = ""
+    if ws_diff >= 4:
+        ws_note = " (long)"
+    elif ws_diff <= -2:
+        ws_note = " (short arms)"
+    return (display_height(h) + "  " +
+            display_height(ws) + ws_note + "  " +
+            str(w) + "lbs  [" + np + "]")
+
+
+# -----------------------------------------
 # TEST
 # -----------------------------------------
 
 if __name__ == "__main__":
 
     from display import display_attr
-    from recruiting import POSITION_ARCHETYPES, ALL_ATTRIBUTES
 
     print("=" * 65)
-    print("  PLAYER SYSTEM v0.7 -- CAROUSEL ATTRIBUTE TEST")
+    print("  PLAYER SYSTEM v0.8 -- PHYSICAL ATTRIBUTES TEST")
     print("=" * 65)
 
     print("")
-    print("=== Player ID + carousel attributes ===")
-    p1 = create_player("Marcus Dillard", "PG", "Junior")
-    p2 = create_player("Tyrese Holloway", "SG", "Senior")
-    p3 = create_player("DeShawn Price", "C", "Junior")
-    for p in [p1, p2, p3]:
-        print("  ID:{:<6} {:<22} {:<5} home:{:<4} vol:{:<3} loyalty(home):{:<3} loyalty(coach):{:<3} recruited_by:{}".format(
-            p["player_id"], p["name"][:21], p["position"],
-            p["home_state"],
-            p["volatility"],
-            p["home_loyalty"],
-            p["coach_loyalty"],
-            p["recruited_by"],
+    print("=== Physical profile by position (10 players each) ===")
+    print("{:<6} {:<10} {:<10} {:<8} {:<12} {:<14}".format(
+        "Pos", "Height", "Wingspan", "Weight", "NatPos", "Explo/Agility"
+    ))
+    print("-" * 65)
+
+    for pos in ["PG", "SG", "SF", "PF", "C"]:
+        for _ in range(3):
+            p = create_player("", pos, "Freshman")
+            print("{:<6} {:<10} {:<10} {:<8} {:<14} {:<6}/{:<6}".format(
+                pos,
+                display_height(p["height"]),
+                display_height(p["wingspan"]),
+                str(p["weight"]) + "lbs",
+                p["natural_position"],
+                display_attr(p["explosiveness"], "1-20"),
+                display_attr(p["agility"], "1-20"),
+            ))
+        print("")
+
+    print("")
+    print("=== Natural position distribution (500 players) ===")
+    from collections import Counter
+    nat_counts = Counter()
+    for pos in POSITIONS:
+        for _ in range(100):
+            p = create_player("", pos, "Freshman")
+            nat_counts[p["natural_position"]] += 1
+
+    for label in NATURAL_POSITIONS:
+        count = nat_counts.get(label, 0)
+        bar   = "#" * (count // 5)
+        print("  {:<12} {:>4}  {}".format(label, count, bar))
+
+    print("")
+    print("=== Ball dominance + usage tendency sample ===")
+    print("{:<22} {:<5} {:<15} {:<14} {:<16}".format(
+        "Name", "Pos", "NatPos", "BallDominance", "UsageTendency"
+    ))
+    print("-" * 75)
+    for pos in ["PG", "SG", "SF", "PF", "C"]:
+        p = create_player("", pos, "Junior")
+        print("{:<22} {:<5} {:<15} {:<14} {:<16}".format(
+            p["name"][:21], p["position"],
+            p["natural_position"],
+            str(p["ball_dominance"]) + "/20",
+            str(p["usage_tendency"]) + "/20",
         ))
 
     print("")
-    print("=== Migration test -- old player gets carousel attrs ===")
-    old_player = {"name": "Old Timer", "position": "SF", "year": "Senior",
-                  "player_id": 9999, "finishing": 600}
-    ensure_player_personality(old_player)
-    print("  coach_loyalty: " + str(old_player["coach_loyalty"]))
-    print("  recruited_by:  " + str(old_player["recruited_by"]))
+    print("=== Physical development test (Freshman -> 3 seasons) ===")
+    p = create_player("Test Player", "C", "Freshman")
+    print("  Starting: " + display_physical(p))
+    fake_coach = {"player_development": 12, "pace": 65}
+    for yr in ["Freshman", "Sophomore", "Junior"]:
+        p["year"] = yr
+        p, _ = develop_player(p, fake_coach, 2025)
+        print("  After " + yr + ": " + display_physical(p))
 
     print("")
-    print("=== ensure_player_carousel_attrs -- stamp with coach_id ===")
-    ensure_player_carousel_attrs(old_player, coach_id=42)
-    print("  recruited_by after stamp: " + str(old_player["recruited_by"]))
-    # Should not overwrite if already set
-    ensure_player_carousel_attrs(old_player, coach_id=99)
-    print("  recruited_by after second call (should still be 42): " + str(old_player["recruited_by"]))
-
-    print("")
-    print("=== coach_loyalty distribution (1000 players) ===")
-    total_loyalty = 0
-    for _ in range(1000):
-        p = create_player("", "SF", "Freshman")
-        total_loyalty += p["coach_loyalty"]
-    print("  Avg coach_loyalty: " + str(round(total_loyalty / 1000, 1)) + "/20")
+    print("=== Migration test (old player gets v0.8 attrs) ===")
+    old = {"name": "Old Timer", "position": "SF", "year": "Senior",
+           "player_id": 9999, "finishing": 600, "ball_handling": 350,
+           "post_scoring": 300, "passing": 310}
+    ensure_player_physical_attrs(old)
+    print("  " + display_physical(old))
+    print("  explosiveness: " + display_attr(old["explosiveness"], "1-20") + "/20")
+    print("  ball_dominance: " + str(old["ball_dominance"]) + "/20")
