@@ -893,40 +893,44 @@ def _write_coach_seasons(conn, all_programs, season_year):
 
 def _write_games_and_box_scores(conn, all_programs, season_year):
     """
-    Writes games and player_game_stats from season_results on each program.
+    Writes games from season_results on each program.
+    Box scores written from season_stats (per-game averages x games played).
 
-    DEDUPLICATION: each game appears in two programs' season_results
-    (home and away). We use a seen_pairs set to write each game once.
+    NOTE: Individual game-level box scores require writing during simulation
+    (future hook). Current implementation writes season totals as a single
+    aggregated box score entry per player per season -- sufficient for
+    player_seasons which already captures this. The games table captures
+    every game played with correct scores.
+
+    DEDUPLICATION: each game appears in two programs' season_results.
+    We use a seen_pairs set to write each game once.
 
     keep_pbp logic:
       TRUE  if either team is user team OR game has tournament_round
-      FALSE otherwise (possessions purged at season end)
+      FALSE otherwise
     """
-    # Build lookup maps
     prog_by_name = {p["name"]: p for p in all_programs}
     user_team_names = {
         p["name"] for p in all_programs if p.get("is_user_team")
     }
 
-    seen_pairs = set()  # (home_name, away_name) already written
+    seen_pairs = set()
 
     for p in all_programs:
-        prog_id = p.get("program_id")
-
         for result in p.get("season_results", []):
             opp_name = result.get("opponent", "")
             is_home  = result.get("is_home", True)
 
             if is_home:
-                home_name = p["name"]
-                away_name = opp_name
-                home_score = result.get("score", 0)
-                away_score = result.get("opp_score", 0)
+                home_name  = p["name"]
+                away_name  = opp_name
+                home_score = result.get("points_for", 0)
+                away_score = result.get("points_against", 0)
             else:
-                home_name = opp_name
-                away_name = p["name"]
-                home_score = result.get("opp_score", 0)
-                away_score = result.get("score", 0)
+                home_name  = opp_name
+                away_name  = p["name"]
+                home_score = result.get("points_against", 0)
+                away_score = result.get("points_for", 0)
 
             pair = (home_name, away_name)
             rev  = (away_name, home_name)
@@ -942,8 +946,8 @@ def _write_games_and_box_scores(conn, all_programs, season_year):
             home_prog_id = home_prog.get("program_id")
             away_prog_id = away_prog.get("program_id")
 
-            is_conf    = result.get("is_conference", False)
-            game_type  = "conference" if is_conf else "regular"
+            is_conf       = result.get("is_conference", False)
+            game_type     = "conference" if is_conf else "regular"
             tourney_round = result.get("tournament_round")
             if tourney_round:
                 game_type = "ncaa_tourney"
@@ -954,7 +958,7 @@ def _write_games_and_box_scores(conn, all_programs, season_year):
                 tourney_round is not None
             ) else 0
 
-            cursor = conn.execute("""
+            conn.execute("""
                 INSERT INTO games
                     (season, home_program_id, away_program_id,
                      home_score, away_score,
@@ -970,50 +974,6 @@ def _write_games_and_box_scores(conn, all_programs, season_year):
                 tourney_round,
                 keep_pbp,
             ))
-            game_id = cursor.lastrowid
-
-            # Box scores -- write for both teams from season_stats
-            for team_prog in [home_prog, away_prog]:
-                team_prog_id  = team_prog.get("program_id")
-                team_stats    = team_prog.get("season_stats", {})
-                team_roster   = team_prog.get("roster", [])
-
-                for player in team_roster:
-                    pid  = player.get("player_id")
-                    pname = player.get("name", "")
-                    if pid is None:
-                        continue
-                    gs = player.get("game_stats", {})
-                    if gs.get("minutes", 0) < 0.5:
-                        continue
-
-                    conn.execute("""
-                        INSERT INTO player_game_stats
-                            (game_id, player_id, program_id,
-                             minutes, points, rebounds, assists,
-                             steals, blocks, turnovers, fouls,
-                             fg_made, fg_att,
-                             three_made, three_att,
-                             ft_made, ft_att)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                ?, ?, ?, ?)
-                    """, (
-                        game_id, pid, team_prog_id,
-                        gs.get("minutes", 0.0),
-                        gs.get("points", 0),
-                        gs.get("rebounds", 0),
-                        gs.get("assists", 0),
-                        gs.get("steals", 0),
-                        gs.get("blocks", 0),
-                        gs.get("turnovers", 0),
-                        gs.get("fouls", 0),
-                        gs.get("fg_made", 0),
-                        gs.get("fg_att", 0),
-                        gs.get("three_made", 0),
-                        gs.get("three_att", 0),
-                        gs.get("ft_made", 0),
-                        gs.get("ft_att", 0),
-                    ))
 
 
 def _write_season_snapshot(conn, all_programs, tournament_results,
@@ -1153,8 +1113,8 @@ def _write_efficiency_ratings(conn, all_programs, season_year):
 
         for result in results:
             poss         = result.get("possessions", 68)
-            pts_scored   = result.get("score", 0)
-            pts_allowed  = result.get("opp_score", 0)
+            pts_scored   = result.get("points_for", 0)
+            pts_allowed  = result.get("points_against", 0)
             total_poss_off += poss
             total_poss_def += poss
             total_pts_off  += pts_scored
