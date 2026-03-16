@@ -1177,7 +1177,7 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
 # WORLD SEASON
 # -----------------------------------------
 
-def simulate_world_season(all_programs, season_year, verbose=True, free_agent_pool=None):
+def simulate_world_season(all_programs, season_year, verbose=True, free_agent_pool=None, db_path=None):
     """
     Simulates a COMPLETE year for the entire world.
 
@@ -1283,6 +1283,17 @@ def simulate_world_season(all_programs, season_year, verbose=True, free_agent_po
     if verbose:
         _print_season_summary(all_programs, tournament_results, carousel_report,
                               season_year, free_agent_pool)
+
+    # Database commit -- write completed season to persistent storage
+    if db_path:
+        from database import commit_season_to_db, save_world_state
+        commit_season_to_db(
+            db_path, all_programs, tournament_results,
+            season_year, free_agent_pool,
+            carousel_report=carousel_report,
+            verbose=verbose,
+        )
+        save_world_state(db_path, all_programs, season_year, free_agent_pool)
 
     return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report, free_agent_pool
 
@@ -1511,9 +1522,38 @@ def print_blue_blood_throne(all_programs, season_year):
 
 if __name__ == "__main__":
 
+    # -----------------------------------------
+    # DATABASE SETUP
+    # _ACTIVE_DB_PATH is read by simulate_world_season() to write history.
+    # Change SAVE_NAME to start a fresh save. Existing saves are resumed.
+    # -----------------------------------------
+    SAVE_NAME = "dynasty_2024"
+    _ACTIVE_DB_PATH = None
+
+    from database import (init_db, get_db_path,
+                          seed_conferences_and_programs,
+                          seed_coaches, seed_players)
+
     print("Loading all D1 programs...")
     all_programs = build_all_d1_programs()
     print("Loaded " + str(len(all_programs)) + " programs")
+
+    # Assign stable numeric program_ids -- primary keys in the database.
+    # Never change after first assignment.
+    for i, p in enumerate(all_programs, start=1):
+        if "program_id" not in p:
+            p["program_id"] = i
+
+    # Initialize or resume save
+    try:
+        _ACTIVE_DB_PATH = init_db(SAVE_NAME, overwrite=False)
+        print("New save created: " + SAVE_NAME)
+        seed_conferences_and_programs(_ACTIVE_DB_PATH, all_programs)
+        seed_coaches(_ACTIVE_DB_PATH, all_programs)
+        seed_players(_ACTIVE_DB_PATH, all_programs)
+    except FileExistsError:
+        _ACTIVE_DB_PATH = get_db_path(SAVE_NAME)
+        print("Resuming existing save: " + SAVE_NAME)
 
     print("")
     print("=== STARTING TIER DISTRIBUTION ===")
@@ -1525,10 +1565,14 @@ if __name__ == "__main__":
 
     free_agent_pool = []
 
+    # Season loop -- range(2024, 2030) = 6 seasons (normal run)
+    # Single season validation: range(2024, 2025)
+    # Current setting: 6 seasons (2024-2029)
     for year in range(2024, 2030):
         all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report, free_agent_pool = simulate_world_season(
             all_programs, season_year=year, verbose=True,
-            free_agent_pool=free_agent_pool
+            free_agent_pool=free_agent_pool,
+            db_path=_ACTIVE_DB_PATH,
         )
         start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
