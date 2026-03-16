@@ -159,18 +159,27 @@ def display_player_card(player, mode=None, scouted=False, scout_noise=0):
         "on_ball_defense", "help_defense", "rebounding", "shot_blocking",
         "steal_tendency", "foul_tendency",
         "speed", "lateral_quickness", "strength", "vertical",
+        "explosiveness", "agility",
     ]
 
     mental_attrs = [
         "basketball_iq", "clutch", "composure", "coachability",
         "work_ethic", "leadership",
+        "ball_dominance", "usage_tendency", "off_ball_movement",
     ]
 
     card = {
-        "name":     player.get("name", "Unknown"),
-        "position": player.get("position", "?"),
-        "year":     player.get("year", "?"),
-        "heritage": player.get("heritage", ""),
+        "name":             player.get("name", "Unknown"),
+        "position":         player.get("position", "?"),
+        "natural_position": player.get("natural_position", "?"),
+        "year":             player.get("year", "?"),
+        "heritage":         player.get("heritage", ""),
+        "height":   display_height(player.get("height", 74)),
+        "wingspan": display_wingspan(
+                        player.get("wingspan", 74),
+                        compare_to_height=player.get("height", 74)
+                    ),
+        "weight":   display_weight(player.get("weight", 200)),
     }
 
     for attr in skill_attrs:
@@ -252,6 +261,65 @@ def _to_letter_from_potential(potential_low, potential_high):
     # using the same formula as _potential_to_attr_ceiling() in player.py
     ceiling_1000 = int(200 + (potential_high / 100.0) * 750)
     return _to_letter(ceiling_1000)
+
+
+# -----------------------------------------
+# PHYSICAL SIZE DISPLAY (v0.8)
+# height and wingspan stored as inches.
+# weight stored as lbs.
+# These are NOT on the 1-1000 scale -- displayed as real units.
+# -----------------------------------------
+
+def display_height(inches):
+    """
+    Converts inches to feet'inches" string.
+    Example: 79 -> "6'7\""
+    """
+    feet   = int(inches) // 12
+    remain = int(inches) % 12
+    return str(feet) + "'" + str(remain) + '"'
+
+
+def display_wingspan(inches, compare_to_height=None):
+    """
+    Converts wingspan inches to display string.
+    If compare_to_height is provided, appends a length note.
+
+    Example:
+      display_wingspan(82)              -> "6'10\""
+      display_wingspan(82, 78)          -> "6'10\" (long)"
+      display_wingspan(76, 78)          -> "6'4\" (short arms)"
+    """
+    base = display_height(inches)
+    if compare_to_height is None:
+        return base
+
+    diff = inches - compare_to_height
+    if diff >= 4:
+        return base + " (long)"
+    elif diff <= -2:
+        return base + " (short arms)"
+    else:
+        return base
+
+
+def display_weight(lbs):
+    """Returns weight as a lbs string. Example: 215 -> '215 lbs'"""
+    return str(int(lbs)) + " lbs"
+
+
+def display_physical_line(player):
+    """
+    Returns a compact one-line physical summary for roster displays.
+    Example: "6'4\"  6'6\" (long)  195 lbs  [guard/wing]"
+    """
+    h  = player.get("height",   74)
+    ws = player.get("wingspan", 74)
+    w  = player.get("weight",   200)
+    np = player.get("natural_position", "?")
+    return (display_height(h) + "  " +
+            display_wingspan(ws, compare_to_height=h) + "  " +
+            display_weight(w) + "  [" + np + "]")
 
 
 # -----------------------------------------

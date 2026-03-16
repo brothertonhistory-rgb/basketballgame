@@ -831,43 +831,43 @@ def rand_attr(base, spread=50):
 def generate_shooting(position):
     if position == "PG":
         return {
-            "catch_and_shoot": rand_attr(400),
-            "off_dribble":     rand_attr(430),
-            "mid_range":       rand_attr(390),
-            "three_point":     rand_attr(390),
-            "free_throw":      rand_attr(420),
-            "finishing":       rand_attr(390),
+            "catch_and_shoot": rand_attr(420),
+            "off_dribble":     rand_attr(440),
+            "mid_range":       rand_attr(410),
+            "three_point":     rand_attr(420),  # raised: PGs shoot 33-35% from 3
+            "free_throw":      rand_attr(440),  # raised: PGs shoot ~74% FT
+            "finishing":       rand_attr(420),  # raised: guards finish at the rim
             "post_scoring":    rand_attr(200),
         }
     elif position == "SG":
         return {
-            "catch_and_shoot": rand_attr(460),
-            "off_dribble":     rand_attr(440),
-            "mid_range":       rand_attr(430),
-            "three_point":     rand_attr(440),
-            "free_throw":      rand_attr(440),
-            "finishing":       rand_attr(390),
+            "catch_and_shoot": rand_attr(480),
+            "off_dribble":     rand_attr(460),
+            "mid_range":       rand_attr(450),
+            "three_point":     rand_attr(470),  # raised: SGs shoot 35-37% from 3
+            "free_throw":      rand_attr(460),  # raised: SGs shoot ~76% FT
+            "finishing":       rand_attr(420),  # raised
             "post_scoring":    rand_attr(210),
         }
     elif position == "SF":
         return {
-            "catch_and_shoot": rand_attr(390),
-            "off_dribble":     rand_attr(360),
-            "mid_range":       rand_attr(380),
-            "three_point":     rand_attr(360),
-            "free_throw":      rand_attr(380),
-            "finishing":       rand_attr(430),
-            "post_scoring":    rand_attr(320),
+            "catch_and_shoot": rand_attr(400),
+            "off_dribble":     rand_attr(370),
+            "mid_range":       rand_attr(390),
+            "three_point":     rand_attr(380),  # raised: SFs shoot ~33% from 3
+            "free_throw":      rand_attr(400),
+            "finishing":       rand_attr(450),  # raised: wings finish well
+            "post_scoring":    rand_attr(330),
         }
     elif position == "PF":
         return {
-            "catch_and_shoot": rand_attr(290),
-            "off_dribble":     rand_attr(260),
-            "mid_range":       rand_attr(320),
-            "three_point":     rand_attr(255),
-            "free_throw":      rand_attr(320),
-            "finishing":       rand_attr(460),
-            "post_scoring":    rand_attr(420),
+            "catch_and_shoot": rand_attr(300),
+            "off_dribble":     rand_attr(265),
+            "mid_range":       rand_attr(330),
+            "three_point":     rand_attr(270),  # slight raise: stretch 4 exists
+            "free_throw":      rand_attr(340),
+            "finishing":       rand_attr(470),
+            "post_scoring":    rand_attr(430),
         }
     else:  # C
         return {
@@ -902,7 +902,7 @@ def generate_defense(position):
         return {
             "on_ball_defense": rand_attr(400),
             "help_defense":    rand_attr(400),
-            "shot_blocking":   rand_attr(250),
+            "shot_blocking":   rand_attr(300, spread=60),  # raised slightly
             "steal_tendency":  rand_attr(360),
             "foul_tendency":   rand_attr(360),
         }
@@ -910,7 +910,7 @@ def generate_defense(position):
         return {
             "on_ball_defense": rand_attr(360),
             "help_defense":    rand_attr(430),
-            "shot_blocking":   rand_attr(340),
+            "shot_blocking":   rand_attr(420, spread=70),  # raised: PF blocks 0.8-1.2/game
             "steal_tendency":  rand_attr(290),
             "foul_tendency":   rand_attr(380),
         }
@@ -918,7 +918,7 @@ def generate_defense(position):
         return {
             "on_ball_defense": rand_attr(300),
             "help_defense":    rand_attr(450),
-            "shot_blocking":   rand_attr(400),
+            "shot_blocking":   rand_attr(520, spread=80),  # raised: C blocks 1.5-2.5/game avg
             "steal_tendency":  rand_attr(230),
             "foul_tendency":   rand_attr(400),
         }
