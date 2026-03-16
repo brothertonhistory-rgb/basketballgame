@@ -381,6 +381,10 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
 
 
 def _recruit_to_player(recruit, conference=""):
+    # v0.8: physical attributes, new athleticism, new mentals, natural_position,
+    # and special flags are all carried through from the recruit's scouting profile.
+    # Nothing is regenerated fresh at enrollment. The player the engine sees is
+    # exactly the player the scout evaluated. The 7'4" recruit arrives as 7'4".
     player = create_player(
         name       = recruit["name"],
         position   = recruit["position"],
@@ -416,14 +420,19 @@ def _recruit_to_player(recruit, conference=""):
             "strength":          recruit.get("strength",          500),
             "vertical":          recruit.get("vertical",          500),
             "endurance":         recruit.get("endurance",         500),
+            "explosiveness":     recruit.get("explosiveness",     500),
+            "agility":           recruit.get("agility",           500),
         },
         mental = {
-            "basketball_iq": recruit.get("basketball_iq", 10),
-            "clutch":        recruit.get("clutch",        10),
-            "composure":     recruit.get("composure",     10),
-            "coachability":  recruit.get("coachability",  10),
-            "work_ethic":    recruit.get("work_ethic",    10),
-            "leadership":    recruit.get("leadership",    10),
+            "basketball_iq":     recruit.get("basketball_iq",     10),
+            "clutch":            recruit.get("clutch",            10),
+            "composure":         recruit.get("composure",         10),
+            "coachability":      recruit.get("coachability",      10),
+            "work_ethic":        recruit.get("work_ethic",        10),
+            "leadership":        recruit.get("leadership",        10),
+            "ball_dominance":    recruit.get("ball_dominance",    10),
+            "usage_tendency":    recruit.get("usage_tendency",    10),
+            "off_ball_movement": recruit.get("off_ball_movement", 10),
         },
         potential = {
             "low":      recruit.get("potential_floor",   10),
@@ -431,6 +440,26 @@ def _recruit_to_player(recruit, conference=""):
             "arc_type": recruit.get("arc_type",          "steady"),
         },
     )
+
+    # Stamp physical size from scouting profile -- never regenerate.
+    # height_inches/weight_lbs/wingspan are the recruit field names.
+    if recruit.get("height_inches"):
+        player["height"]  = recruit["height_inches"]
+    if recruit.get("weight_lbs"):
+        player["weight"]  = recruit["weight_lbs"]
+    if recruit.get("wingspan"):
+        player["wingspan"] = recruit["wingspan"]
+
+    # Carry natural_position derived at scouting time
+    if recruit.get("natural_position"):
+        player["natural_position"] = recruit["natural_position"]
+
+    # Carry special flags -- development system and engine read these
+    if recruit.get("generational_talent"):
+        player["generational_talent"] = recruit["generational_talent"]
+    if recruit.get("outlier_type"):
+        player["outlier_type"] = recruit["outlier_type"]
+
     return player
 
 
