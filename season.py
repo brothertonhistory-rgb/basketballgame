@@ -16,6 +16,115 @@ from coaching_carousel import run_coaching_carousel, print_carousel_report
 from program import update_stale_meter, update_coaching_capital
 
 # -----------------------------------------
+# NET RANKING SYSTEM
+# Quadrant-based strength of schedule ranking.
+# Mirrors the NCAA NET formula using prestige instead of NET rank.
+#
+# QUADRANT DEFINITIONS (opponent prestige by game location):
+#   Q1: Home vs 75+,  Neutral vs 65+,  Away vs 55+
+#   Q2: Home vs 50-74, Neutral vs 40-64, Away vs 30-54
+#   Q3: Home vs 25-49, Neutral vs 20-39, Away vs 15-29
+#   Q4: Everything else
+#
+# RANKING SCORE:
+#   win_pct * 0.35
+#   + Q1 wins * 4.0   (gold)
+#   + Q2 wins * 1.5
+#   + Q3 wins * 0.5
+#   + Q4 wins * 0.1   (barely counts)
+#   - Q1 loss * 0.5   (forgivable)
+#   - Q2 loss * 1.5
+#   - Q3 loss * 3.0   (damaging)
+#   - Q4 loss * 6.0   (devastating)
+#   + avg_opp_prestige / 100 * 0.20
+# -----------------------------------------
+
+# Quadrant prestige thresholds by location
+_Q_HOME    = [(75, 1), (50, 2), (25, 3)]   # (min_prestige, quadrant)
+_Q_NEUTRAL = [(65, 1), (40, 2), (20, 3)]
+_Q_AWAY    = [(55, 1), (30, 2), (15, 3)]
+
+# Score weights
+_NET_WIN_PCT_WEIGHT   = 0.35
+_NET_OPP_WEIGHT       = 0.20
+_NET_Q_WIN_WEIGHTS    = {1: 4.0, 2: 1.5, 3: 0.5, 4: 0.1}
+_NET_Q_LOSS_WEIGHTS   = {1: -0.5, 2: -1.5, 3: -3.0, 4: -6.0}
+
+
+def _get_quadrant(opp_prestige, is_home, is_neutral=False):
+    """Returns quadrant (1-4) for a game based on opponent prestige and location."""
+    if is_neutral:
+        thresholds = _Q_NEUTRAL
+    elif is_home:
+        thresholds = _Q_HOME
+    else:
+        thresholds = _Q_AWAY
+
+    for min_p, quad in thresholds:
+        if opp_prestige >= min_p:
+            return quad
+    return 4
+
+
+def calculate_net_score(program, all_programs):
+    """
+    Calculates a program's NET-style ranking score for the current season.
+
+    Uses season_results on the program dict (set during simulate_conference_season).
+    Opponent prestige is looked up live from all_programs -- valid because
+    prestige doesn't change during the season, only in the post-season pipeline.
+
+    Returns a float. Higher = better ranking.
+    """
+    results = program.get("season_results", [])
+    if not results:
+        return 0.0
+
+    prog_lookup = {p["name"]: p for p in all_programs}
+
+    wins   = 0
+    losses = 0
+    q_wins   = {1: 0, 2: 0, 3: 0, 4: 0}
+    q_losses = {1: 0, 2: 0, 3: 0, 4: 0}
+    opp_prestige_sum = 0
+    games_with_opp   = 0
+
+    for result in results:
+        opp_name = result.get("opponent", "")
+        opp      = prog_lookup.get(opp_name)
+
+        if opp is None:
+            continue
+
+        opp_prestige      = opp.get("prestige_current", 30)
+        is_home           = result.get("is_home", True)
+        won               = result.get("won", False)
+
+        quad = _get_quadrant(opp_prestige, is_home)
+
+        if won:
+            wins += 1
+            q_wins[quad] += 1
+        else:
+            losses += 1
+            q_losses[quad] += 1
+
+        opp_prestige_sum += opp_prestige
+        games_with_opp   += 1
+
+    total    = wins + losses
+    win_pct  = wins / max(1, total)
+    avg_opp  = opp_prestige_sum / max(1, games_with_opp)
+
+    score = (win_pct * _NET_WIN_PCT_WEIGHT)
+    for q in range(1, 5):
+        score += q_wins[q]   * _NET_Q_WIN_WEIGHTS[q]
+        score += q_losses[q] * _NET_Q_LOSS_WEIGHTS[q]
+    score += (avg_opp / 100.0) * _NET_OPP_WEIGHT
+
+    return score
+
+# -----------------------------------------
 # COLLEGE HOOPS SIM -- Season Calendar v0.7
 # Full world simulation -- all 326 D1 programs
 #
@@ -1077,9 +1186,8 @@ def simulate_world_season(all_programs, season_year, verbose=True):
             continue
         simulate_conference_season(conf_programs, all_programs, season_year, verbose=False)
 
-    # National Top 25 + Conference Leaders suppressed from per-season output.
-    # Flip to verbose to re-enable for debugging.
-    if False:
+    # National Top 25 -- now uses NET quadrant rankings, always print when verbose
+    if verbose:
         print_national_standings(all_programs, season_year)
 
     # Step 3b: Conference tournaments -- determines auto-bids for NCAA tournament
@@ -1188,23 +1296,27 @@ def simulate_world_season(all_programs, season_year, verbose=True):
 
 def print_national_standings(all_programs, season_year):
     from program import get_effective_prestige
-    ranked = sorted(
-        [p for p in all_programs if p["wins"] + p["losses"] > 0],
-        key=lambda p: (p["wins"] / max(1, p["wins"] + p["losses"]), p["wins"]),
-        reverse=True
-    )
+
+    # Calculate NET scores for all programs with games played
+    active = [p for p in all_programs if p["wins"] + p["losses"] > 0]
+    net_scores = {p["name"]: calculate_net_score(p, all_programs) for p in active}
+
+    ranked = sorted(active, key=lambda p: net_scores[p["name"]], reverse=True)
+
     print("")
-    print("--- " + str(season_year) + " National Top 25 ---")
-    print("{:<3} {:<22} {:<18} {:<10} {:<10} {}".format(
-        "#", "Team", "Conference", "Record", "Base", "Effective"))
-    print("-" * 78)
+    print("--- " + str(season_year) + " National Top 25 (NET Rankings) ---")
+    print("{:<3} {:<22} {:<18} {:<10} {:<8} {:<8} {}".format(
+        "#", "Team", "Conference", "Record", "NET", "Base", "Effective"))
+    print("-" * 85)
     for i, p in enumerate(ranked[:25]):
-        overall = str(p["wins"]) + "-" + str(p["losses"])
-        ep      = round(get_effective_prestige(p), 1)
-        buzz    = round(p.get("tournament_buzz", {}).get("current", 0.0), 1)
-        ep_str  = str(ep) + (" (+"+str(buzz)+")" if buzz > 0 else "")
-        print("{:<3} {:<22} {:<18} {:<10} {:<10} {}".format(
+        overall  = str(p["wins"]) + "-" + str(p["losses"])
+        ep       = round(get_effective_prestige(p), 1)
+        buzz     = round(p.get("tournament_buzz", {}).get("current", 0.0), 1)
+        ep_str   = str(ep) + (" (+"+str(buzz)+")" if buzz > 0 else "")
+        net_str  = str(round(net_scores[p["name"]], 2))
+        print("{:<3} {:<22} {:<18} {:<10} {:<8} {:<8} {}".format(
             i+1, p["name"], p["conference"][:17], overall,
+            net_str,
             str(p["prestige_current"]) + " (" + p["prestige_grade"] + ")",
             ep_str))
 

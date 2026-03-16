@@ -63,9 +63,29 @@ SEPARATION_SOFT = 8
 # SELECTION SCORE
 # -----------------------------------------
 
+# -----------------------------------------
+# SELECTION SCORE
+# Uses NET quadrant ranking imported from season.py.
+# Falls back to simple win_pct * tier_weight if NET score unavailable.
+# _prog_lookup is set once per tournament run for efficiency.
+# -----------------------------------------
+
+_prog_lookup_cache = {}   # populated by simulate_ncaa_tournament before selection
+
+
 def _selection_score(program):
-    from programs_data import get_conference_tier
     from program import get_effective_prestige
+    from programs_data import get_conference_tier
+
+    # Use cached NET score if available (set by simulate_ncaa_tournament)
+    net = program.get("_net_score")
+    if net is not None:
+        # Small effective prestige tiebreaker -- identical NET scores go to
+        # the program with more historical prestige
+        ep_tb = get_effective_prestige(program) / 10000.0
+        return net + ep_tb
+
+    # Fallback: conference-weighted win percentage (original formula)
     games   = program["wins"] + program["losses"]
     win_pct = program["wins"] / max(1, games)
     tier    = get_conference_tier(program["conference"])["tier"]
@@ -335,6 +355,14 @@ def _apply_buzz_for_result(program, result, season_year):
 # -----------------------------------------
 
 def simulate_ncaa_tournament(all_programs, auto_bids, season_year=2024, verbose=True):
+    from season import calculate_net_score
+
+    # Stamp NET scores on every program before selection runs.
+    # _selection_score() reads program["_net_score"] for ranking.
+    # Cleaned up after the tournament completes.
+    for p in all_programs:
+        p["_net_score"] = calculate_net_score(p, all_programs)
+
     for p in all_programs:
         ensure_tournament_buzz(p)
         p["ncaa_tournament_result"] = {
@@ -409,6 +437,10 @@ def simulate_ncaa_tournament(all_programs, auto_bids, season_year=2024, verbose=
         if p["name"] in participant_names:
             result = p["ncaa_tournament_result"]["result"]
             _apply_buzz_for_result(p, result, season_year)
+
+    # Clean up temp NET score field
+    for p in all_programs:
+        p.pop("_net_score", None)
 
     final_four_names = [e["program"]["name"] for e in final_four]
     champion_name    = champion_entry["program"]["name"] if champion_entry else "Unknown"
