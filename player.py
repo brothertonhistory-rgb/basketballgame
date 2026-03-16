@@ -3,49 +3,39 @@ import uuid
 from names import generate_player_name
 
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Player System v0.6
+# COLLEGE HOOPS SIM -- Player System v0.7
 # System 2 of the Design Bible
 #
-# v0.6 CHANGES -- Portal Personality Attributes:
+# v0.7 CHANGES -- Coaching Carousel Attributes:
 #
-#   Five new permanent attributes added to every player at creation.
-#   These persist for the player's entire career and drive transfer
-#   portal decisions. They are NOT developable -- they are identity.
+#   TWO new permanent attributes added to every player at creation:
 #
-#   volatility         (1-20) -- random departure chance. High = unpredictable.
-#   playing_time_hunger (1-20) -- how badly sitting burns them.
-#   home_loyalty       (1-20) -- pull toward home state/region.
-#   prestige_ambition  (1-20) -- drive to play at the highest level.
-#   role_acceptance    (1-20) -- willingness to be a role player at a bigger school.
+#   recruited_by  (int or None):
+#     The coach_id of the coach who recruited this player.
+#     Stamped at enrollment in lifecycle.py when a recruit is added
+#     to a roster. Players generated at world-build get the current
+#     coach's coach_id via ensure_player_carousel_attrs() migration.
+#     Used by coaching_carousel.py for:
+#       - portal wave probability (coach left = anchor gone)
+#       - poach check (coach pulling former players to new school)
+#     Never changes once set -- it's the relationship at signing.
 #
-#   home_state added to every player. Used by portal destination scoring
-#   and recruiting interest. Two-letter state code (e.g. "TX", "OH").
+#   coach_loyalty (1-20):
+#     How personally attached this player is to a specific coach
+#     vs. the institution. Independent of home_loyalty.
+#     High = follows a coach anywhere. Low = committed to the school.
+#     Permanent identity trait -- never develops.
 #
-#   ensure_player_personality() -- retroactive migration function.
-#   Call on any existing player dict to add missing portal attributes.
-#   Safe to call multiple times -- never overwrites existing values.
+# v0.6 CHANGES (preserved):
+#   Portal personality attributes (volatility, playing_time_hunger,
+#   home_loyalty, prestige_ambition, role_acceptance).
+#   home_state on every player.
 #
-# v0.5 CHANGES -- Unique Player ID:
+# v0.5 CHANGES (preserved):
+#   Unique player_id on every player.
 #
-#   Every player now receives a unique integer ID at creation.
-#   Stored as player["player_id"] -- a monotonically incrementing
-#   integer from _PLAYER_ID_COUNTER.
-#
-# v0.4 CHANGES -- 1-1000 internal attribute scale.
-#   All skill attributes on 1-1000 scale.
-#   Mental attributes (work_ethic, coachability, basketball_iq,
-#   clutch, composure, leadership) remain on 1-20.
-#   Display handled entirely by display.py.
-#
-# SCALE ANCHORS:
-#   1000 -- generational. Not present at world-build.
-#    950 -- superstar, top 3 draft pick. Rare outlier.
-#    850 -- high-major star, all-conference level.
-#    750 -- solid high-major starter.
-#    650 -- mid-major starter, fringe high-major.
-#    550 -- fringe D1. A coach said yes.
-#    300 -- below average even for D1.
-#    150 -- true floor. Cannot do this thing.
+# v0.4 CHANGES (preserved):
+#   1-1000 internal attribute scale.
 # -----------------------------------------
 
 POSITIONS = ["PG", "SG", "SF", "PF", "C"]
@@ -54,18 +44,15 @@ ARC_TYPES = ["bust", "plateau", "steady", "overachiever", "late_bloomer"]
 
 # -----------------------------------------
 # PLAYER ID COUNTER
-# Simple monotonic integer. Starts at 1.
-# In a future SQLite migration this becomes the primary key.
 # -----------------------------------------
 
-_PLAYER_ID_COUNTER = [0]   # mutable list so it persists across calls
+_PLAYER_ID_COUNTER = [0]
 
 def _next_player_id():
     _PLAYER_ID_COUNTER[0] += 1
     return _PLAYER_ID_COUNTER[0]
 
 
-# All developable skill attributes -- mental attributes never change
 DEVELOPABLE_ATTRIBUTES = [
     "catch_and_shoot", "off_dribble", "mid_range", "three_point", "free_throw",
     "finishing", "post_scoring",
@@ -112,8 +99,6 @@ BREAKTHROUGH_ARC_WEIGHTS = {
     "bust":          0.1,
 }
 
-# All US states for home_state assignment at world-build
-# Weighted by basketball player production
 _HOME_STATE_WEIGHTS = {
     "CA": 120, "TX": 110, "FL": 95,  "GA": 90,  "NY": 80,
     "OH": 75,  "IL": 75,  "NC": 70,  "NJ": 65,  "PA": 65,
@@ -134,68 +119,25 @@ def _pick_home_state():
     return random.choices(states, weights=weights, k=1)[0]
 
 
-# -----------------------------------------
-# CEILING CONVERSION
-# -----------------------------------------
-
 def _potential_to_attr_ceiling(potential_high):
-    """
-    Converts potential_high (1-100) to attribute ceiling on 1-1000 scale.
-    Formula: 200 + (potential_high / 100) * 750
-    Cap at 950 -- 1000 reserved for future special events only.
-    """
     return min(950, int(200 + (potential_high / 100.0) * 750))
 
 
-# -----------------------------------------
-# PORTAL PERSONALITY GENERATION
-# -----------------------------------------
-
 def generate_portal_personality():
-    """
-    Generates the five permanent portal personality attributes.
-    All on 1-20 scale, same as mental attributes.
-    These are identity traits -- they never develop or change.
-
-    Attribute correlations are intentional:
-      High prestige_ambition + low role_acceptance = only transfers UP to start.
-      High volatility + high home_loyalty = unpredictable but ends up close to home.
-      Low playing_time_hunger + high home_loyalty = stays put unless pushed.
-    """
     return {
-        # How likely to leave even when things are fine.
-        # High = restless. Low = stable unless something real happens.
         "volatility":          _rand_mental(2, 8),
-
-        # How much sitting on the bench burns them.
-        # High = will leave after one bad minutes season.
-        # Low = patient, willing to wait their turn.
         "playing_time_hunger": _rand_mental(5, 15),
-
-        # Pull toward home state/region.
-        # High = will always factor in proximity. Low = goes wherever.
         "home_loyalty":        _rand_mental(3, 14),
-
-        # Drive to play at the highest prestige level possible.
-        # High = will seek Blue Blood or Power conf if given the chance.
-        # Low = fine wherever, prestige doesn't motivate them.
         "prestige_ambition":   _rand_mental(4, 14),
-
-        # Willingness to be a role player at a bigger school.
-        # High = happy starting fewer minutes if the stage is bigger.
-        # Low = must start. Will not accept bench role anywhere.
         "role_acceptance":     _rand_mental(3, 13),
     }
 
 
 def ensure_player_personality(player):
     """
-    Retroactive migration function. Adds portal personality attributes
-    and home_state to any existing player dict that's missing them.
-
-    Safe to call multiple times -- never overwrites existing values.
-    This is called at portal entry filter time so existing world-build
-    players get personality assigned on first portal evaluation.
+    Retroactive migration. Adds portal personality, home_state,
+    and v0.7 carousel attributes if missing.
+    Safe to call multiple times.
     """
     if "volatility" not in player:
         personality = generate_portal_personality()
@@ -204,6 +146,28 @@ def ensure_player_personality(player):
 
     if "home_state" not in player:
         player["home_state"] = _pick_home_state()
+
+    # v0.7 carousel attributes
+    if "coach_loyalty" not in player:
+        player["coach_loyalty"] = _rand_mental(3, 15)
+
+    if "recruited_by" not in player:
+        player["recruited_by"] = None   # set at enrollment; world-build uses migration
+
+    return player
+
+
+def ensure_player_carousel_attrs(player, coach_id=None):
+    """
+    v0.7 migration specifically for carousel attributes.
+    Call at world-build migration with the program's current coach_id.
+    If coach_id is provided and recruited_by is None, stamps it.
+    """
+    if "coach_loyalty" not in player:
+        player["coach_loyalty"] = _rand_mental(3, 15)
+
+    if "recruited_by" not in player:
+        player["recruited_by"] = coach_id   # None if no coach provided
 
     return player
 
@@ -214,11 +178,6 @@ def ensure_player_personality(player):
 
 def develop_player(player, coach, season_year,
                    training_focus=None, morale_modifier=1.0):
-    """
-    Develops a player through one offseason.
-    Returns (player, development_report).
-    All attribute gains on the 1-1000 scale.
-    """
     year         = player.get("year", "Freshman")
     arc_type     = player.get("arc_type", "steady")
     work_ethic   = player.get("work_ethic", 10)
@@ -359,7 +318,6 @@ def _avg_key_attrs(player, position):
 
 
 def _develop_endurance(player, coach, combined_dev):
-    """Develops endurance separately. Pace is primary driver."""
     year = player.get("year", "Freshman")
     if year == "Senior":
         return
@@ -418,13 +376,13 @@ def create_player(name, position, year, conference="",
 
     player = {
         # --- IDENTITY ---
-        "player_id": _next_player_id(),   # v0.5: unique immutable integer ID
+        "player_id": _next_player_id(),
         "name":      name,
         "position":  position,
         "year":      year,
         "heritage":  heritage,
 
-        # --- GEOGRAPHY (v0.6) ---
+        # --- GEOGRAPHY ---
         "home_state": _pick_home_state(),
 
         # --- SKILL ATTRIBUTES (1-1000) ---
@@ -454,7 +412,7 @@ def create_player(name, position, year, conference="",
         "vertical":          athleticism["vertical"],
         "endurance":         athleticism["endurance"],
 
-        # --- MENTAL ATTRIBUTES (1-20, intentionally separate scale) ---
+        # --- MENTAL ATTRIBUTES (1-20) ---
         "basketball_iq": mental["basketball_iq"],
         "clutch":        mental["clutch"],
         "composure":     mental["composure"],
@@ -462,14 +420,20 @@ def create_player(name, position, year, conference="",
         "work_ethic":    mental["work_ethic"],
         "leadership":    mental["leadership"],
 
-        # --- PORTAL PERSONALITY (1-20, permanent identity -- never develops) ---
+        # --- PORTAL PERSONALITY (1-20, permanent identity) ---
         "volatility":           personality["volatility"],
         "playing_time_hunger":  personality["playing_time_hunger"],
         "home_loyalty":         personality["home_loyalty"],
         "prestige_ambition":    personality["prestige_ambition"],
         "role_acceptance":      personality["role_acceptance"],
 
-        # --- POTENTIAL (1-100 talent abstraction) ---
+        # --- CAROUSEL ATTRIBUTES (v0.7) ---
+        # recruited_by: stamped at enrollment. None at world-build until migration runs.
+        "recruited_by":  None,
+        # coach_loyalty: permanent. How much they follow a coach vs. the school.
+        "coach_loyalty": _rand_mental(3, 15),
+
+        # --- POTENTIAL ---
         "potential_low":  potential["low"],
         "potential_high": potential["high"],
         "arc_type":       potential["arc_type"],
@@ -485,7 +449,6 @@ def create_player(name, position, year, conference="",
 
 # -----------------------------------------
 # ATTRIBUTE GENERATORS
-# All values on 1-1000 scale.
 # -----------------------------------------
 
 def rand_attr(base, spread=50):
@@ -668,18 +631,10 @@ def generate_athleticism(position):
 
 
 def _rand_mental(low, high=None, spread=None):
-    """
-    Flexible mental attribute generator.
-    Supports two calling styles:
-      _rand_mental(low, high)          -- original style, random int in range
-      _rand_mental(base, spread=n)     -- recruiting.py style, gaussian around base
-    """
     if spread is not None:
-        # Called as _rand_mental(base, spread=n) -- gaussian around base
         val = int(random.gauss(low, spread))
         return max(1, min(20, val))
     else:
-        # Called as _rand_mental(low, high) -- uniform range
         return random.randint(low, high)
 
 
@@ -713,11 +668,6 @@ def generate_potential():
 # -----------------------------------------
 
 def apply_prestige_bonus(player, prestige):
-    """
-    Scales player attributes up based on program prestige.
-    Elite programs recruit better players -- this reflects that
-    at world-build without running a full recruiting cycle.
-    """
     if prestige <= 20:
         bonus_pct = 0.0
     elif prestige <= 40:
@@ -742,20 +692,9 @@ def apply_prestige_bonus(player, prestige):
 
 
 def apply_freak_profile(player, position=None, true_talent=None):
-    """
-    Occasionally gives a player an unusually high cross-positional attribute.
-    Creates the PG who can rebound, the C who can shoot, etc.
-
-    Supports two calling styles:
-      apply_freak_profile(player, position)              -- original style
-      apply_freak_profile(player, true_talent=n)         -- recruiting.py style
-        When called with true_talent only, position is read from the player dict.
-        true_talent modulates the boost magnitude -- higher talent = bigger freak spike.
-    """
     if random.random() > 0.08:
         return player
 
-    # Resolve position -- either passed directly or read from player dict
     pos = position if position is not None else player.get("position", "SF")
 
     from recruiting import POSITION_ARCHETYPES
@@ -768,7 +707,6 @@ def apply_freak_profile(player, position=None, true_talent=None):
     attr    = random.choice(floor_attrs)
     current = player.get(attr, 300)
 
-    # Higher true_talent = larger potential freak boost
     if true_talent is not None:
         talent_factor = max(0.5, min(1.5, true_talent / 60.0))
         boost = int(random.randint(100, 250) * talent_factor)
@@ -780,11 +718,6 @@ def apply_freak_profile(player, position=None, true_talent=None):
 
 
 def generate_team(program_name, prestige=50, roster_size=13):
-    """
-    Generates a full roster for a program at world-build.
-    Each player gets a unique player_id via create_player().
-    All players get portal personality attributes at creation.
-    """
     position_slots = {
         "PG": 2, "SG": 3, "SF": 3, "PF": 3, "C": 2,
     }
@@ -801,7 +734,6 @@ def generate_team(program_name, prestige=50, roster_size=13):
             player = apply_freak_profile(player, pos)
             roster.append(player)
 
-    # Fill to roster_size with random positions
     while len(roster) < roster_size:
         pos    = random.choice(POSITIONS)
         year   = random.choices(years, weights=year_dist, k=1)[0]
@@ -818,19 +750,15 @@ def generate_team(program_name, prestige=50, roster_size=13):
 
 
 def get_team_ratings(program):
-    """
-    Returns aggregate team ratings for a program.
-    Used by the game engine for team-level calculations.
-    """
     roster = program.get("roster", [])
     if not roster:
         return {"shooting": 500, "defense": 500, "rebounding": 500,
                 "playmaking": 500, "athleticism": 500}
 
-    shooting    = []
-    defense_r   = []
-    rebounding_r = []
-    playmaking_r = []
+    shooting      = []
+    defense_r     = []
+    rebounding_r  = []
+    playmaking_r  = []
     athleticism_r = []
 
     for p in roster:
@@ -876,48 +804,44 @@ if __name__ == "__main__":
     from recruiting import POSITION_ARCHETYPES, ALL_ATTRIBUTES
 
     print("=" * 65)
-    print("  PLAYER SYSTEM v0.6 -- PORTAL PERSONALITY TEST")
+    print("  PLAYER SYSTEM v0.7 -- CAROUSEL ATTRIBUTE TEST")
     print("=" * 65)
 
     print("")
-    print("=== Player ID + personality verification ===")
+    print("=== Player ID + carousel attributes ===")
     p1 = create_player("Marcus Dillard", "PG", "Junior")
     p2 = create_player("Tyrese Holloway", "SG", "Senior")
     p3 = create_player("DeShawn Price", "C", "Junior")
     for p in [p1, p2, p3]:
-        print("  ID:{:<6} {:<22} {:<5} home:{:<4} vol:{:<3} pt_hunger:{:<3} loyalty:{:<3} ambition:{:<3} role_acc:{}".format(
+        print("  ID:{:<6} {:<22} {:<5} home:{:<4} vol:{:<3} loyalty(home):{:<3} loyalty(coach):{:<3} recruited_by:{}".format(
             p["player_id"], p["name"][:21], p["position"],
             p["home_state"],
-            p["volatility"], p["playing_time_hunger"],
-            p["home_loyalty"], p["prestige_ambition"], p["role_acceptance"]
+            p["volatility"],
+            p["home_loyalty"],
+            p["coach_loyalty"],
+            p["recruited_by"],
         ))
 
     print("")
-    print("=== ensure_player_personality() migration test ===")
-    # Simulate an old player dict without personality
+    print("=== Migration test -- old player gets carousel attrs ===")
     old_player = {"name": "Old Timer", "position": "SF", "year": "Senior",
                   "player_id": 9999, "finishing": 600}
-    print("  Before migration -- has volatility: " + str("volatility" in old_player))
     ensure_player_personality(old_player)
-    print("  After migration  -- has volatility: " + str("volatility" in old_player))
-    print("  home_state: " + old_player["home_state"])
-    print("  volatility: " + str(old_player["volatility"]))
-    # Call again -- should not overwrite
-    original_vol = old_player["volatility"]
-    ensure_player_personality(old_player)
-    print("  Called again -- volatility unchanged: " + str(old_player["volatility"] == original_vol))
+    print("  coach_loyalty: " + str(old_player["coach_loyalty"]))
+    print("  recruited_by:  " + str(old_player["recruited_by"]))
 
     print("")
-    print("=== Portal personality distribution (1000 players) ===")
-    attrs = ["volatility", "playing_time_hunger", "home_loyalty",
-             "prestige_ambition", "role_acceptance"]
-    totals = {a: 0 for a in attrs}
+    print("=== ensure_player_carousel_attrs -- stamp with coach_id ===")
+    ensure_player_carousel_attrs(old_player, coach_id=42)
+    print("  recruited_by after stamp: " + str(old_player["recruited_by"]))
+    # Should not overwrite if already set
+    ensure_player_carousel_attrs(old_player, coach_id=99)
+    print("  recruited_by after second call (should still be 42): " + str(old_player["recruited_by"]))
+
+    print("")
+    print("=== coach_loyalty distribution (1000 players) ===")
+    total_loyalty = 0
     for _ in range(1000):
-        pp = generate_portal_personality()
-        for a in attrs:
-            totals[a] += pp[a]
-    print("  {:<22} {:<8}".format("Attribute", "Avg (1-20)"))
-    print("  " + "-" * 30)
-    for a in attrs:
-        avg = round(totals[a] / 1000, 1)
-        print("  {:<22} {}".format(a, avg))
+        p = create_player("", "SF", "Freshman")
+        total_loyalty += p["coach_loyalty"]
+    print("  Avg coach_loyalty: " + str(round(total_loyalty / 1000, 1)) + "/20")

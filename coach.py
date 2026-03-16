@@ -1,38 +1,97 @@
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Coaching Philosophy v0.4
+# COLLEGE HOOPS SIM -- Coaching Philosophy v0.5
 #
-# v0.4 CHANGES -- roster_fill_aggressiveness:
+# v0.5 CHANGES -- Coaching Carousel Attributes:
 #
-#   NEW internal attribute added to every coach.
-#   Represents how willing a coach is to sign a marginal player
-#   to fill a scholarship vs leaving it open.
+#   NEW coach attributes for carousel system:
+#     coach_id           -- unique integer ID (same system as player_id)
+#     alma_mater         -- school name string (flavor/recruiting pull)
+#     home_region        -- one of: northeast, southeast, midwest, southwest, west
+#     ambition           -- 1-20, how hard they chase power conference jobs
+#     rebuild_tolerance  -- 1-20, willingness to stay through a down cycle
+#     loyalty            -- 1-20, resistance to leaving a program that's been good to them
 #
-#   DERIVED from existing attributes -- not a new random number:
-#     rotation_size     -- coach who plays 9-10 wants deeper roster
-#     player_development -- developer takes raw projects others won't
-#     slot_strictness   -- low strictness (just give me athletes) = aggressive
-#                          high strictness (specific roles) = selective
+#   coach_id is the primary key for:
+#     - player["recruited_by"] stamping at enrollment
+#     - job market recycled coach pool
+#     - poach mechanic (coach pulls former players)
 #
-#   Formula:
-#     rotation_component    = (rotation_size - 6) / 5       [0.0-1.0]
-#     development_component = (player_development - 1) / 19 [0.0-1.0]
-#     strictness_component  = (10 - slot_strictness) / 9    [0.0-1.0, inverted]
-#     raw = rotation*0.45 + development*0.30 + strictness*0.25
-#     roster_fill_aggressiveness = clamp(1-10, round(raw*10) + noise)
+#   Experience tactical advantage:
+#     experience_edge() -- weighted by career win pct, not raw years.
+#     A 30-year coach with .380 career record gets a fraction of the edge
+#     a 30-year coach with .600 record gets.
+#     Used by game_engine.py as a subtle in-game modifier.
 #
-#   NEVER shown to human player. Internal simulation driver only.
-#
-#   Used by lifecycle.py post-enrollment roster floor check:
-#     7-10: takes anyone to fill to 13, very aggressive
-#     4-6:  signs players meeting modest talent bar, targets 12
-#     1-3:  selective, comfortable leaving spots open, floor at 11
-#
+# v0.4 CHANGES (preserved):
+#   roster_fill_aggressiveness derived from existing attributes.
 # v0.3 CHANGES (preserved):
 #   _generate_competence() bonus capped at 3.
 # v0.4 note on scale: All skill attributes on 1-1000. Coach competence stays 1-20.
 # -----------------------------------------
 
 import random
+
+# -----------------------------------------
+# COACH ID COUNTER
+# Same pattern as player_id. Monotonic integer.
+# In SQLite migration this becomes the primary key.
+# -----------------------------------------
+
+_COACH_ID_COUNTER = [0]
+
+def _next_coach_id():
+    _COACH_ID_COUNTER[0] += 1
+    return _COACH_ID_COUNTER[0]
+
+
+# US regions for coach home_region
+# Used for recruiting pull and job market preference
+COACH_REGIONS = ["northeast", "southeast", "midwest", "southwest", "west"]
+
+_REGION_WEIGHTS = [15, 25, 25, 20, 15]
+
+# Programs by region (flavor -- not exhaustive, used for alma_mater generation)
+_REGIONAL_PROGRAMS = {
+    "northeast": [
+        "Connecticut", "Syracuse", "Providence", "Seton Hall", "St. John's",
+        "Villanova", "Georgetown", "Pittsburgh", "Penn State", "Rutgers",
+        "Boston College", "Rhode Island", "UMass", "Maine", "Vermont",
+    ],
+    "southeast": [
+        "Duke", "North Carolina", "Kentucky", "Louisville", "Tennessee",
+        "Florida", "Georgia", "Alabama", "Auburn", "LSU", "Mississippi State",
+        "South Carolina", "Clemson", "Wake Forest", "Virginia",
+        "NC State", "Georgia Tech", "Vanderbilt", "Ole Miss",
+    ],
+    "midwest": [
+        "Michigan", "Michigan State", "Ohio State", "Indiana", "Purdue",
+        "Illinois", "Iowa", "Wisconsin", "Minnesota", "Northwestern",
+        "Kansas", "Missouri", "Iowa State", "Kansas State", "Creighton",
+        "Notre Dame", "Butler", "Xavier", "Dayton", "Cincinnati",
+    ],
+    "southwest": [
+        "Texas", "Oklahoma", "Texas A&M", "Baylor", "TCU",
+        "Texas Tech", "Oklahoma State", "Arkansas", "Houston", "SMU",
+        "UTEP", "Texas State", "Stephen F. Austin", "Sam Houston",
+        "New Mexico", "UNLV", "Utah State", "Fresno State",
+    ],
+    "west": [
+        "UCLA", "USC", "Oregon", "Washington", "Arizona",
+        "Arizona State", "Stanford", "California", "Utah", "Colorado",
+        "Gonzaga", "BYU", "San Diego State", "Nevada", "Boise State",
+        "Sacramento State", "Montana", "Idaho",
+    ],
+}
+
+
+def _pick_home_region():
+    return random.choices(COACH_REGIONS, weights=_REGION_WEIGHTS, k=1)[0]
+
+
+def _pick_alma_mater(home_region):
+    pool = _REGIONAL_PROGRAMS.get(home_region, _REGIONAL_PROGRAMS["midwest"])
+    return random.choice(pool)
+
 
 COACH_ARCHETYPES = {
 
@@ -48,6 +107,10 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": -1,
         "slot_strictness_bias": 3,
         "rotation_flexibility_bias": 2,
+        # Carousel personality biases
+        "ambition_bias": -3,        # grinders don't chase prestige jobs
+        "rebuild_tolerance_bias": 4, # they stay through hard times
+        "loyalty_bias": 3,
     },
 
     "pace_and_space": {
@@ -62,6 +125,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": 2,
         "slot_strictness_bias": -2,
         "rotation_flexibility_bias": 7,
+        "ambition_bias": 3,
+        "rebuild_tolerance_bias": -2,
+        "loyalty_bias": -2,
     },
 
     "princeton_style": {
@@ -76,6 +142,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": -2,
         "slot_strictness_bias": 4,
         "rotation_flexibility_bias": 2,
+        "ambition_bias": -2,
+        "rebuild_tolerance_bias": 3,
+        "loyalty_bias": 4,
     },
 
     "motion_offense": {
@@ -90,6 +159,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": 0,
         "slot_strictness_bias": 1,
         "rotation_flexibility_bias": 5,
+        "ambition_bias": 0,
+        "rebuild_tolerance_bias": 1,
+        "loyalty_bias": 1,
     },
 
     "dribble_drive": {
@@ -104,6 +176,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": 1,
         "slot_strictness_bias": -1,
         "rotation_flexibility_bias": 7,
+        "ambition_bias": 2,
+        "rebuild_tolerance_bias": -1,
+        "loyalty_bias": -1,
     },
 
     "post_centric": {
@@ -118,6 +193,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": -1,
         "slot_strictness_bias": 3,
         "rotation_flexibility_bias": 3,
+        "ambition_bias": -1,
+        "rebuild_tolerance_bias": 2,
+        "loyalty_bias": 2,
     },
 
     "pressure_defense": {
@@ -132,6 +210,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": 2,
         "slot_strictness_bias": 1,
         "rotation_flexibility_bias": 7,
+        "ambition_bias": 2,
+        "rebuild_tolerance_bias": 0,
+        "loyalty_bias": 0,
     },
 
     "zone_specialist": {
@@ -146,6 +227,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": -1,
         "slot_strictness_bias": 2,
         "rotation_flexibility_bias": 2,
+        "ambition_bias": -1,
+        "rebuild_tolerance_bias": 2,
+        "loyalty_bias": 3,
     },
 
     "analytics_modern": {
@@ -160,6 +244,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": 1,
         "slot_strictness_bias": 0,
         "rotation_flexibility_bias": 6,
+        "ambition_bias": 3,
+        "rebuild_tolerance_bias": -2,
+        "loyalty_bias": -1,
     },
 
     "wildcard": {
@@ -174,6 +261,9 @@ COACH_ARCHETYPES = {
         "rotation_size_bias": 0,
         "slot_strictness_bias": 0,
         "rotation_flexibility_bias": 5,
+        "ambition_bias": 0,
+        "rebuild_tolerance_bias": 0,
+        "loyalty_bias": 0,
     },
 }
 
@@ -215,22 +305,20 @@ def _scale_attr(val):
     return _scale(val, 1, 1000)
 
 
+def _rand_carousel(base, noise=3):
+    """Generates a 1-20 carousel personality attribute."""
+    val = int(random.gauss(base, noise))
+    return max(1, min(20, val))
+
+
 def _derive_roster_fill_aggressiveness(rotation_size, player_development, slot_strictness):
     """
     Derives roster_fill_aggressiveness (1-10) from existing coach attributes.
     Internal only -- never shown to human player.
-
-    High value (7-10): takes marginal players to fill to 13. Mid/low major grinder.
-    Medium value (4-6): signs players meeting a modest bar. Targets 12.
-    Low value (1-3):  selective. Comfortable at 11. Elite program mentality.
-
-    rotation_size     6-11  -> higher = wants more bodies
-    player_development 1-20 -> higher = willing to take projects
-    slot_strictness   1-10  -> INVERTED: lower = less picky = more aggressive
     """
-    rotation_component    = (rotation_size - 6) / 5.0          # 0.0 - 1.0
-    development_component = (player_development - 1) / 19.0    # 0.0 - 1.0
-    strictness_component  = (10 - slot_strictness) / 9.0       # 0.0 - 1.0 (inverted)
+    rotation_component    = (rotation_size - 6) / 5.0
+    development_component = (player_development - 1) / 19.0
+    strictness_component  = (10 - slot_strictness) / 9.0
 
     raw = (
         rotation_component    * 0.45 +
@@ -298,19 +386,44 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
     roster_values = _generate_roster_values(archetype, philosophy)
 
     # --- ROSTER FILL AGGRESSIVENESS (v0.4) ---
-    # Internal only. Derived from rotation_size, player_development, slot_strictness.
     roster_fill_aggressiveness = _derive_roster_fill_aggressiveness(
         rotation_size,
         competence["player_development"],
         slot_strictness,
     )
 
+    # --- CAROUSEL PERSONALITY (v0.5) ---
+    home_region = _pick_home_region()
+    alma_mater  = _pick_alma_mater(home_region)
+
+    # Ambition: prestige programs attract ambitious coaches
+    ambition_base = 10 + t.get("ambition_bias", 0) + min(3, prestige // 35)
+    ambition      = _rand_carousel(ambition_base)
+
+    # Rebuild tolerance: inversely related to ambition, archetype-driven
+    rebuild_base      = 10 + t.get("rebuild_tolerance_bias", 0)
+    rebuild_tolerance = _rand_carousel(rebuild_base)
+
+    # Loyalty: independent personality trait
+    loyalty_base = 10 + t.get("loyalty_bias", 0)
+    loyalty      = _rand_carousel(loyalty_base)
+
     coach = {
         # --- IDENTITY ---
+        "coach_id":   _next_coach_id(),   # v0.5: unique immutable integer ID
         "name":       name,
         "archetype":  archetype,
         "experience": experience,
         "legacy":     0,
+
+        # --- GEOGRAPHY (v0.5) ---
+        "home_region": home_region,
+        "alma_mater":  alma_mater,
+
+        # --- CAROUSEL PERSONALITY (v0.5, 1-20) ---
+        "ambition":          ambition,
+        "rebuild_tolerance": rebuild_tolerance,
+        "loyalty":           loyalty,
 
         # --- PHILOSOPHY SLIDERS ---
         "pace":           philosophy["pace"],
@@ -356,6 +469,78 @@ def generate_coach(name, prestige=50, archetype=None, experience=None):
         "career_wins":        0,
         "career_losses":      0,
     }
+
+    return coach
+
+
+def experience_edge(coach):
+    """
+    Returns a subtle tactical edge multiplier (0.97 - 1.06) based on
+    experience weighted by career win percentage.
+
+    A 30-year coach with .600 career record gets the full edge.
+    A 30-year coach with .380 career record gets a fraction.
+    A first-year coach gets 0.97 (mild disadvantage vs veterans).
+
+    Used by game_engine.py as an in-game modifier on tactics checks.
+    Scale is intentionally narrow -- experience is real but subtle.
+    """
+    experience = coach.get("experience", 0)
+    wins       = coach.get("career_wins", 0)
+    losses     = coach.get("career_losses", 0)
+    total      = wins + losses
+
+    # Career win pct -- default to .500 if no games played (new coach)
+    if total > 0:
+        win_pct = wins / total
+    else:
+        win_pct = 0.500
+
+    # Experience factor: 0 at year 0, 1.0 at year 25+
+    exp_factor = min(1.0, experience / 25.0)
+
+    # Quality weight: .600 = full credit. .400 = half credit. Below = minimal.
+    if win_pct >= 0.600:
+        quality_weight = 1.0
+    elif win_pct >= 0.500:
+        quality_weight = 0.5 + (win_pct - 0.500) * 5.0   # 0.5 to 1.0
+    elif win_pct >= 0.400:
+        quality_weight = 0.2 + (win_pct - 0.400) * 3.0   # 0.2 to 0.5
+    else:
+        quality_weight = 0.1
+
+    # Combined edge: max +0.09 for a true veteran with great record
+    raw_edge = exp_factor * quality_weight * 0.09
+
+    # New coaches get a small disadvantage (-0.03)
+    if experience < 2:
+        return max(0.97, 1.0 - 0.03 + raw_edge)
+
+    return min(1.06, 1.0 + raw_edge)
+
+
+def ensure_coach_carousel_attrs(coach):
+    """
+    Migration safety. Adds v0.5 carousel attributes to any existing
+    coach dict that's missing them. Safe to call multiple times.
+    """
+    if "coach_id" not in coach:
+        coach["coach_id"] = _next_coach_id()
+
+    if "home_region" not in coach:
+        coach["home_region"] = _pick_home_region()
+
+    if "alma_mater" not in coach:
+        coach["alma_mater"] = _pick_alma_mater(coach["home_region"])
+
+    if "ambition" not in coach:
+        coach["ambition"] = random.randint(6, 14)
+
+    if "rebuild_tolerance" not in coach:
+        coach["rebuild_tolerance"] = random.randint(6, 14)
+
+    if "loyalty" not in coach:
+        coach["loyalty"] = random.randint(6, 14)
 
     return coach
 
@@ -470,10 +655,15 @@ def print_coach_profile(coach, show_archetype=False):
 
     print("")
     print("=" * 65)
-    print("  " + coach["name"])
+    print("  " + coach["name"] + "  [ID:" + str(coach.get("coach_id", "?")) + "]")
     if show_archetype:
         print("  Archetype:      " + coach["archetype"])
     print("  Experience:     " + str(coach["experience"]) + " years")
+    print("  Home region:    " + coach.get("home_region", "?"))
+    print("  Alma mater:     " + coach.get("alma_mater", "?"))
+    print("  Ambition:       " + str(coach.get("ambition", "?")) + "/20")
+    print("  Rebuild tol:    " + str(coach.get("rebuild_tolerance", "?")) + "/20")
+    print("  Loyalty:        " + str(coach.get("loyalty", "?")) + "/20")
     print("  Rotation size:  " + str(coach["rotation_size"]) + " players")
     print("  Rot flexibility:" + str(coach["rotation_flexibility"]) + "/10")
     print("  Slot strictness:" + str(coach["slot_strictness"]) + "/10")
@@ -481,6 +671,8 @@ def print_coach_profile(coach, show_archetype=False):
           ("  (aggressive filler)" if coach["roster_fill_aggressiveness"] >= 7
            else "  (selective)"       if coach["roster_fill_aggressiveness"] <= 3
            else "  (balanced)"))
+    edge = experience_edge(coach)
+    print("  Experience edge:" + str(round(edge, 3)) + "x")
 
     print("")
     print("  -- OFFENSE --")
@@ -530,7 +722,7 @@ if __name__ == "__main__":
     from player import create_player
 
     print("=" * 65)
-    print("  COACH GENERATION TEST -- v0.4")
+    print("  COACH GENERATION TEST -- v0.5")
     print("=" * 65)
 
     coaches = [
@@ -551,32 +743,34 @@ if __name__ == "__main__":
 
     print("")
     print("=" * 65)
-    print("  ROSTER FILL AGGRESSIVENESS VERIFICATION")
-    print("  Expected: SWAC/mid-major coaches = 6-9, elite = 2-5")
+    print("  CAROUSEL PERSONALITY DISTRIBUTION")
     print("=" * 65)
-    print("  {:<25} {:<12} {:<8} {:<8} {:<8}".format(
-        "Coach", "Archetype", "Rot", "Slot", "Fill"))
-    print("  " + "-" * 61)
+    print("  {:<25} {:<12} {:<10} {:<12} {:<12}".format(
+        "Coach", "Archetype", "Ambition", "Rebuild Tol", "Loyalty"))
+    print("  " + "-" * 71)
     for c in coaches:
-        print("  {:<25} {:<12} {:<8} {:<8} {:<8}".format(
+        print("  {:<25} {:<12} {:<10} {:<12} {:<12}".format(
             c["name"], c["archetype"],
-            str(c["rotation_size"]),
-            str(c["slot_strictness"]),
-            str(c["roster_fill_aggressiveness"]) + "/10",
+            str(c["ambition"]) + "/20",
+            str(c["rebuild_tolerance"]) + "/20",
+            str(c["loyalty"]) + "/20",
         ))
 
     print("")
     print("=" * 65)
-    print("  COMPETENCE CEILING VERIFICATION -- 50 elite coaches")
+    print("  EXPERIENCE EDGE TEST")
     print("=" * 65)
-    maxed_count  = 0
-    total_ratings = 0
-    for i in range(50):
-        c = generate_coach("Coach " + str(i+1), prestige=90, experience=25)
-        for key in ["offensive_skill", "defensive_skill", "recruiting_attraction", "roster_fit"]:
-            total_ratings += 1
-            if c[key] == 20:
-                maxed_count += 1
-    print("  Ratings at 20/20: " + str(maxed_count) + " of " + str(total_ratings) +
-          " (" + str(round(maxed_count / total_ratings * 100, 1)) + "%)")
-    print("  (healthy: under 5%)")
+    test_cases = [
+        (0,  0,  0,   "First year coach"),
+        (5,  50, 30,  "5-year coach .625 record"),
+        (15, 180, 120, "15-year coach .600 record"),
+        (25, 400, 200, "25-year coach .667 record"),
+        (25, 200, 350, "25-year coach .364 record (career loser)"),
+        (30, 600, 250, "30-year coach .706 record (legend)"),
+    ]
+    print("  {:<38} {}".format("Profile", "Edge multiplier"))
+    print("  " + "-" * 55)
+    for exp, wins, losses, label in test_cases:
+        fake_coach = {"experience": exp, "career_wins": wins, "career_losses": losses}
+        edge = experience_edge(fake_coach)
+        print("  {:<38} {}x".format(label, round(edge, 4)))

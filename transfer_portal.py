@@ -1236,11 +1236,19 @@ def run_portal_destination_matching(all_programs, portal_pool, season_year, verb
 # Called by season.py
 # -----------------------------------------
 
-def run_transfer_portal(all_programs, season_year, verbose=True):
+def run_transfer_portal(all_programs, season_year, verbose=True,
+                        extra_portal_players=None):
     """
     Runs the complete portal cycle for a season.
     Phase 1: Entry filter (who leaves)
     Phase 2: Destination matching (where they go)
+
+    extra_portal_players:
+        Optional list of player dicts already removed from their rosters
+        by the coaching carousel (portal wave + poach victims who need
+        destination matching). These are prepended to the portal pool
+        before destination matching runs. They skip the entry filter
+        since they've already been evaluated and removed.
 
     Returns:
         all_programs  -- portal players removed from origins, added to destinations
@@ -1255,6 +1263,26 @@ def run_transfer_portal(all_programs, season_year, verbose=True):
     all_programs, portal_pool, portal_report = run_portal_entry_filter(
         all_programs, season_year, verbose=verbose
     )
+
+    # Inject carousel-generated portal players (portal wave + poach victims)
+    # These have already been removed from their rosters by coaching_carousel.py
+    if extra_portal_players:
+        for player in extra_portal_players:
+            # Ensure portal state is set correctly
+            if not player.get("portal_status"):
+                player["portal_status"]  = "entered"
+                player["portal_year"]    = season_year
+                player["portal_trigger"] = "coaching_change"
+                if not player.get("portal_from"):
+                    player["portal_from"] = player.get("previous_school", "unknown")
+                if TRANSFER_RULES_ERA == "classic":
+                    player["portal_sit_year"] = True
+                else:
+                    player["portal_sit_year"] = False
+        portal_pool = extra_portal_players + portal_pool
+        portal_report["total_entered"] += len(extra_portal_players)
+        if verbose:
+            print("  Carousel additions to portal: " + str(len(extra_portal_players)))
 
     all_programs, portal_pool = run_portal_destination_matching(
         all_programs, portal_pool, season_year, verbose=verbose

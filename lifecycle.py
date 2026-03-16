@@ -1,5 +1,5 @@
 # -----------------------------------------
-# COLLEGE HOOPS SIM -- Player Lifecycle v0.5
+# COLLEGE HOOPS SIM -- Player Lifecycle v0.6
 # Closes the loop between recruiting and rosters.
 #
 # Called once per season, AFTER simulate_world_season()
@@ -9,42 +9,26 @@
 #   1. Develop returning players
 #   2. Graduate seniors
 #   3. Age remaining players
-#   4. Enroll committed recruits
+#   4. Enroll committed recruits        <-- v0.6: stamp recruited_by here
 #   5. Reset recruiting state
-#   6. POST-ENROLLMENT ROSTER FLOOR CHECK  (NEW v0.5)
+#   6. POST-ENROLLMENT ROSTER FLOOR CHECK
 #   7. Allocate minutes for new roster
 #   8. Update cohesion
 #
-# v0.5 CHANGES -- Roster Floor Check:
+# v0.6 CHANGES -- recruited_by stamping:
 #
-#   After all normal enrollment, any program below their tiered
-#   floor target gets additional forced enrollments from the
-#   unsigned recruit pool. The aggressiveness of the search is
-#   driven by the coach's roster_fill_aggressiveness attribute
-#   (1-10, derived in coach.py v0.4).
+#   When a recruit enrolls, their player dict gets:
+#     player["recruited_by"] = coach["coach_id"]
 #
-#   TIERED FLOOR TARGETS (by conference tier):
-#     power      (SEC, Big Ten etc): target 12, absolute floor 10
-#     high_major (AAC, A-10 etc):    target 12, absolute floor 11
-#     mid_major  (MVC, MAC etc):     target 13, absolute floor 11
-#     low_major  (Big South etc):    target 13, absolute floor 11
-#     floor_conf (SWAC, MEAC etc):   target 13, absolute floor 11
+#   This is the key relationship that coaching_carousel.py uses for:
+#     - Portal wave probability (anchor lost when coach leaves)
+#     - Poach check (coach pulls former players to new school)
 #
-#   AGGRESSIVENESS TIERS:
-#     7-10: will take any available recruit, minimal talent bar
-#     4-6:  modest talent bar (true_talent >= 10)
-#     1-3:  only signs players meeting a real bar (true_talent >= 20)
-#           but still fills to absolute floor regardless
+#   Floor fill enrollments also get stamped.
 #
-#   ABSOLUTE FLOOR (10 for power, 11 for everyone else):
-#     Overrides aggressiveness. Below this, a program takes anyone
-#     available regardless of coach philosophy. No program ever
-#     ends a cycle with fewer than their absolute floor.
-#
-# v0.4 CHANGES (preserved):
-#   Development runs before graduation.
-#   develop_player() from player.py called on every player.
-#   Breakthroughs tracked world-wide.
+# v0.5 CHANGES (preserved):
+#   Post-enrollment roster floor check.
+#   roster_fill_aggressiveness drives talent bar.
 # -----------------------------------------
 
 from player import create_player, develop_player
@@ -56,9 +40,6 @@ YEAR_PROGRESSION = {
     "Senior":    "Senior",
 }
 
-# Tiered roster floor targets and absolute minimums
-# target = what the coach actively tries to reach
-# floor  = absolute minimum, overrides all coach philosophy
 ROSTER_FLOOR_CONFIG = {
     "power":      {"target": 12, "floor": 10},
     "high_major": {"target": 12, "floor": 11},
@@ -68,12 +49,10 @@ ROSTER_FLOOR_CONFIG = {
 }
 _DEFAULT_FLOOR_CONFIG = {"target": 13, "floor": 11}
 
-# Talent bar by aggressiveness tier
-# Programs below their target will sign recruits at or above this bar
 AGGRESSIVENESS_TALENT_BAR = {
-    "high":   5,    # aggressiveness 7-10: take almost anyone
-    "medium": 10,   # aggressiveness 4-6: modest bar
-    "low":    20,   # aggressiveness 1-3: real bar, but floor still enforced
+    "high":   5,
+    "medium": 10,
+    "low":    20,
 }
 
 
@@ -109,13 +88,10 @@ def advance_season(all_programs, recruiting_class, season_year=2025):
     breakthrough_log    = []
     program_reports     = []
 
-    # Build unsigned pool once for the floor check pass
-    # These are recruits who didn't commit through the normal cycle
     unsigned_pool = [
         r for r in recruiting_class
         if r.get("status") in ("unsigned", "available")
     ]
-    # Sort by true_talent descending so programs get best available
     unsigned_pool.sort(key=lambda r: r.get("true_talent", 0), reverse=True)
 
     for program in all_programs:
@@ -239,10 +215,13 @@ def _age_roster(program):
 
 # -----------------------------------------
 # STEP 4: ENROLL COMMITTED RECRUITS
+# v0.6: stamp recruited_by = current coach_id on every enrollee
 # -----------------------------------------
 
 def _enroll_recruits(program, recruiting_class):
     program_name = program["name"]
+    coach        = program.get("coach", {})
+    coach_id     = coach.get("coach_id", None)   # v0.6: for recruited_by stamp
 
     incoming = [
         r for r in recruiting_class
@@ -252,10 +231,13 @@ def _enroll_recruits(program, recruiting_class):
 
     enrolled = 0
     for recruit in incoming:
-        # Hard 13-scholarship cap -- never exceed it during enrollment
         if len(program["roster"]) >= 13:
             break
         player = _recruit_to_player(recruit, program.get("conference", ""))
+
+        # v0.6: stamp the recruiting coach's ID on this player
+        player["recruited_by"] = coach_id
+
         program["roster"].append(player)
         recruit["status"] = "enrolled"
         enrolled += 1
@@ -265,24 +247,15 @@ def _enroll_recruits(program, recruiting_class):
 
 # -----------------------------------------
 # STEP 6: ROSTER FLOOR CHECK (v0.5)
+# v0.6: stamp recruited_by on floor-fill enrollees too
 # -----------------------------------------
 
 def _enforce_roster_floor(program, coach, unsigned_pool):
-    """
-    After all normal enrollment, ensures no program falls below
-    their tiered floor target or absolute minimum.
-
-    Uses coach's roster_fill_aggressiveness to set the talent bar
-    for recruits they're willing to take. The absolute floor
-    overrides aggressiveness -- below it, take anyone available.
-
-    Modifies unsigned_pool in place (removes enrolled recruits).
-    Returns count of emergency enrollments.
-    """
     conference   = program.get("conference", "")
     floor_config = _get_floor_config(conference)
     target       = floor_config["target"]
     abs_floor    = floor_config["floor"]
+    coach_id     = coach.get("coach_id", None)   # v0.6
 
     current_size = len(program["roster"])
 
@@ -295,7 +268,6 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
 
     enrolled = 0
 
-    # Get current position counts for need-aware filling
     pos_counts = {}
     for p in program["roster"]:
         pos = p.get("position", "SF")
@@ -310,22 +282,18 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
     }
 
     slots_to_fill = min(target, 13) - current_size
-    slots_to_fill = max(0, slots_to_fill)  # never negative
+    slots_to_fill = max(0, slots_to_fill)
 
     for _ in range(slots_to_fill):
         if len(program["roster"]) >= min(target, 13):
             break
 
-        current_size = len(program["roster"])
+        current_size    = len(program["roster"])
         below_abs_floor = current_size < abs_floor
-
-        # Determine effective talent bar for this slot
-        # Below absolute floor: take anyone regardless of philosophy
-        effective_bar = 0 if below_abs_floor else talent_bar
+        effective_bar   = 0 if below_abs_floor else talent_bar
 
         filled = False
 
-        # Try most-needed position first
         sorted_needs = sorted(
             position_needs.items(), key=lambda x: x[1], reverse=True
         )
@@ -342,6 +310,7 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
                     continue
 
                 player = _recruit_to_player(recruit, program.get("conference", ""))
+                player["recruited_by"] = coach_id   # v0.6 stamp
                 program["roster"].append(player)
                 recruit["status"] = "enrolled"
                 recruit["committed_to"] = program["name"]
@@ -354,7 +323,6 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
             if filled:
                 break
 
-        # If no position-specific recruit found, take anyone at/above bar
         if not filled:
             for i, recruit in enumerate(unsigned_pool):
                 if recruit.get("status") not in ("unsigned", "available"):
@@ -363,6 +331,7 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
                     continue
 
                 player = _recruit_to_player(recruit, program.get("conference", ""))
+                player["recruited_by"] = coach_id   # v0.6 stamp
                 program["roster"].append(player)
                 recruit["status"] = "enrolled"
                 recruit["committed_to"] = program["name"]
@@ -374,7 +343,6 @@ def _enforce_roster_floor(program, coach, unsigned_pool):
                 break
 
         if not filled:
-            # No recruits available at all -- stop trying
             break
 
     return enrolled
@@ -540,12 +508,27 @@ if __name__ == "__main__":
     )
     print("  Committed: " + str(cycle_summary["total_commits"]))
 
-    print("Running lifecycle with floor enforcement...")
+    print("Running lifecycle with recruited_by stamping...")
     all_programs, lifecycle_summary = advance_season(
         all_programs, recruiting_class, season_year=2025
     )
 
     print_lifecycle_summary(lifecycle_summary, season_year=2025)
+
+    print("")
+    print("=== RECRUITED_BY STAMP VERIFICATION ===")
+    stamped   = 0
+    unstamped = 0
+    for prog in all_programs:
+        coach_id = prog.get("coach", {}).get("coach_id")
+        for player in prog.get("roster", []):
+            if player.get("year") == "Freshman":
+                if player.get("recruited_by") == coach_id:
+                    stamped += 1
+                else:
+                    unstamped += 1
+    print("  Freshmen with correct recruited_by stamp: " + str(stamped))
+    print("  Freshmen missing stamp:                   " + str(unstamped))
 
     print("")
     print("=== ROSTER FLOOR VERIFICATION ===")
@@ -556,31 +539,3 @@ if __name__ == "__main__":
             print("  " + p["name"] + ": " + str(len(p["roster"])) + " players")
     else:
         print("PASS: All programs at 10+ players.")
-
-    at_target = [p for p in all_programs if len(p.get("roster", [])) >= 12]
-    print("Programs at 12+ players: " + str(len(at_target)) + " of " + str(len(all_programs)))
-
-    print("")
-    print("=== FLOOR FILL SUMMARY ===")
-    filled = [r for r in lifecycle_summary["program_reports"] if r.get("floor_filled", 0) > 0]
-    print("Programs that needed floor fills: " + str(len(filled)))
-    for r in sorted(filled, key=lambda x: x["floor_filled"], reverse=True)[:10]:
-        print("  " + r["name"].ljust(24) +
-              "floor filled: " + str(r["floor_filled"]) +
-              "  final roster: " + str(r["roster_size"]))
-
-    print("")
-    print("=== ROSTER FILL AGGRESSIVENESS SAMPLE ===")
-    print("  Checking that coach attribute is driving behavior...")
-    for prog in all_programs[:5]:
-        c = prog.get("coach", {})
-        agg = c.get("roster_fill_aggressiveness", "?")
-        conf = prog.get("conference", "?")
-        from programs_data import get_conference_tier
-        tier = get_conference_tier(conf)["tier"]
-        floor_cfg = ROSTER_FLOOR_CONFIG.get(tier, _DEFAULT_FLOOR_CONFIG)
-        print("  " + prog["name"].ljust(24) +
-              "conf_tier: " + tier.ljust(12) +
-              "target: " + str(floor_cfg["target"]) +
-              "  floor: " + str(floor_cfg["floor"]) +
-              "  coach_agg: " + str(agg) + "/10")
