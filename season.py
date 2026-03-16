@@ -1538,22 +1538,47 @@ if __name__ == "__main__":
     all_programs = build_all_d1_programs()
     print("Loaded " + str(len(all_programs)) + " programs")
 
-    # Assign stable numeric program_ids -- primary keys in the database.
-    # Never change after first assignment.
-    for i, p in enumerate(all_programs, start=1):
-        if "program_id" not in p:
-            p["program_id"] = i
-
     # Initialize or resume save
     try:
+        # --- NEW SAVE ---
+        # Assign IDs by list order. Permanent for this save.
+        # Different saves (custom teams, historical eras) get their own ID space.
+        for i, p in enumerate(all_programs, start=1):
+            p["program_id"] = i
+
         _ACTIVE_DB_PATH = init_db(SAVE_NAME, overwrite=False)
         print("New save created: " + SAVE_NAME)
         seed_conferences_and_programs(_ACTIVE_DB_PATH, all_programs)
         seed_coaches(_ACTIVE_DB_PATH, all_programs)
         seed_players(_ACTIVE_DB_PATH, all_programs)
+
     except FileExistsError:
+        # --- RESUMING SAVE ---
+        # Load stable IDs from the database and stamp them back onto
+        # the program dicts. Never reassign by list order on resume --
+        # list order could change if programs_data.py is ever edited.
         _ACTIVE_DB_PATH = get_db_path(SAVE_NAME)
         print("Resuming existing save: " + SAVE_NAME)
+
+        import sqlite3 as _sqlite3
+        _conn = _sqlite3.connect(_ACTIVE_DB_PATH)
+        _rows = _conn.execute("SELECT program_id, name FROM programs").fetchall()
+        _conn.close()
+
+        _id_map = {row[1]: row[0] for row in _rows}
+        _unmatched = []
+        for p in all_programs:
+            if p["name"] in _id_map:
+                p["program_id"] = _id_map[p["name"]]
+            else:
+                # New program not in registry (e.g. expansion team added after save)
+                next_id = max(_id_map.values(), default=0) + 1
+                p["program_id"] = next_id
+                _id_map[p["name"]] = next_id
+                _unmatched.append(p["name"])
+
+        if _unmatched:
+            print("  New programs assigned IDs: " + ", ".join(_unmatched))
 
     print("")
     print("=== STARTING TIER DISTRIBUTION ===")
