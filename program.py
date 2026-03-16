@@ -173,7 +173,8 @@ def _init_tournament_buzz():
 
 def create_program(name, nickname, city, state, division, conference,
                    home_court, venue_rating, prestige_current,
-                   prestige_gravity, coach_name, coach_archetype=None):
+                   prestige_gravity, coach_name, coach_archetype=None,
+                   coach_experience=None):
 
     roster_data = generate_team(name, prestige=prestige_current)
 
@@ -188,6 +189,7 @@ def create_program(name, nickname, city, state, division, conference,
 
     coach = generate_coach(coach_name, prestige=prestige_current,
                            archetype=coach_archetype,
+                           experience=coach_experience,
                            board_patience=board_patience)
 
     carousel = _init_carousel_state(prestige_current)

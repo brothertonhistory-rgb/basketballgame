@@ -1224,109 +1224,139 @@ def simulate_world_season(all_programs, season_year, verbose=True, free_agent_po
             continue
         simulate_conference_season(conf_programs, all_programs, season_year, verbose=False)
 
-    # National Top 25 -- now uses NET quadrant rankings, always print when verbose
-    if verbose:
-        print_national_standings(all_programs, season_year)
-
-    # Step 3b: Conference tournaments -- determines auto-bids for NCAA tournament
+    # Step 3b: Conference tournaments
     auto_bids, conf_tourney_results = simulate_all_conference_tournaments(
-        all_programs, verbose=verbose
+        all_programs, verbose=False
     )
 
     # Step 3c: NCAA Tournament
-    # verbose=False suppresses full bracket play-by-play.
-    # print_tournament_summary still runs -- shows champion, Final Four, cinderellas.
     all_programs, tournament_results = simulate_ncaa_tournament(
         all_programs, auto_bids, season_year=season_year, verbose=False
     )
-    if verbose:
-        print_tournament_summary(tournament_results, season_year)
 
     # Step 4: Universe gravity
     apply_universe_gravity(all_programs)
 
     # Step 4b: Blue blood throne check
-    run_blue_blood_throne_check(all_programs, season_year, verbose=verbose)
+    run_blue_blood_throne_check(all_programs, season_year, verbose=False)
 
-    # Step 4c: Coaching capital update (tournament performance -> coach runway)
+    # Step 4c: Coaching capital update
     for program in all_programs:
         ncaa_result    = program.get("ncaa_tournament_result", {})
         tourney_result = ncaa_result.get("result", "none")
         update_coaching_capital(program, tourney_result, season_year)
 
     # Step 4d: Coaching carousel
-    # Runs BEFORE transfer portal -- coaching changes trigger portal wave entries
     all_programs, carousel_report, carousel_portal_additions, free_agent_pool = run_coaching_carousel(
         all_programs, season_year=season_year,
-        free_agent_pool=free_agent_pool, verbose=verbose
+        free_agent_pool=free_agent_pool, verbose=False
     )
-    if verbose:
-        print_carousel_report(carousel_report)
 
-    if verbose:
-        print("")
-        print("--- " + str(season_year) + " Recruiting Cycle ---")
-
+    # Recruiting cycle
     recruiting_class = generate_recruiting_class(season=season_year)
-
-    if verbose:
-        print("  Class generated: " + str(len(recruiting_class)) + " prospects")
-
     all_programs, recruiting_class = generate_offers(all_programs, recruiting_class)
     all_programs, recruiting_class = calculate_interest_scores(all_programs, recruiting_class)
     all_programs, recruiting_class, cycle_summary = resolve_full_recruiting_cycle(
         all_programs, recruiting_class, verbose=False
     )
 
-    if verbose:
-        print("  Early signings:  " + str(len(cycle_summary["early_commits"])))
-        print("  Late signings:   " + str(len(cycle_summary["late_commits"])))
-        print("  Total committed: " + str(cycle_summary["total_commits"]))
-        print("  Unsigned:        " + str(len(cycle_summary["unsigned"])))
-
     for program in all_programs:
         finalize_season_stats(program, season_year=season_year)
 
-    if verbose:
-        print("")
-        print("--- " + str(season_year) + " Roster Turnover ---")
-
     all_programs, lifecycle_summary = advance_season(all_programs, recruiting_class)
 
-    if verbose:
-        print("  Seniors graduated: " + str(lifecycle_summary["total_graduated"]))
-        print("  Recruits enrolled: " + str(lifecycle_summary["total_enrolled"]))
-        reports = lifecycle_summary.get("program_reports", [])
-        if reports:
-            avg_cohesion = sum(r.get("cohesion", 50) for r in reports) / len(reports)
-            high_coh     = [r for r in reports if r.get("cohesion_tier") in ("very_high", "high")]
-            low_coh      = [r for r in reports if r.get("cohesion_tier") in ("low", "very_low")]
-            total_bonds  = sum(r.get("combo_bonds", 0) for r in reports)
-            print("  Avg cohesion:      " + str(round(avg_cohesion, 1)) + "/100")
-            print("  High cohesion:     " + str(len(high_coh)) + " programs")
-            print("  Low cohesion:      " + str(len(low_coh)) + " programs")
-            print("  Veteran bonds:     " + str(total_bonds) + " total")
-
-    # Step 8: Tournament buzz decay
-    # Each program's buzz decays based on this season's tournament performance
-    # relative to gravity. Missing the tournament bleeds 60% of buzz.
-    # Deep run memory (Final Four+) slows decay for low-gravity programs.
+    # Tournament buzz decay
     from program import apply_buzz_decay
     for program in all_programs:
-        ncaa_result   = program.get("ncaa_tournament_result", {})
-        made_tourney  = ncaa_result.get("seed") is not None
+        ncaa_result    = program.get("ncaa_tournament_result", {})
+        made_tourney   = ncaa_result.get("seed") is not None
         tourney_result = ncaa_result.get("result", "none")
         apply_buzz_decay(program, made_tourney, tourney_result, season_year)
 
-    # Step 9: Transfer portal
-    # Carousel portal wave additions are injected here -- they skip the entry
-    # filter (already removed from rosters) but go through destination matching.
+    # Transfer portal
     all_programs, portal_pool, portal_report = run_transfer_portal(
-        all_programs, season_year=season_year, verbose=verbose,
+        all_programs, season_year=season_year, verbose=False,
         extra_portal_players=carousel_portal_additions
     )
 
+    # Lean per-season summary
+    if verbose:
+        _print_season_summary(all_programs, tournament_results, carousel_report,
+                              season_year, free_agent_pool)
+
     return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report, free_agent_pool
+
+
+def _print_season_summary(all_programs, tournament_results, carousel_report,
+                          season_year, free_agent_pool):
+    """
+    Lean per-season output. Shows only what matters for monitoring a sim run:
+      - Season header
+      - NCAA Tournament result
+      - Blue blood throne
+      - Tier distribution
+      - Carousel counts + free agent pool size
+    """
+    conferences = {}
+    for p in all_programs:
+        conf = p["conference"]
+        if conf not in conferences:
+            conferences[conf] = []
+        conferences[conf].append(p)
+
+    print("")
+    print("=" * 60)
+    print("  " + str(season_year) + "  |  " +
+          str(len(all_programs)) + " programs  |  " +
+          str(len(conferences)) + " conferences")
+    print("=" * 60)
+
+    # NCAA Tournament
+    if tournament_results:
+        champ   = tournament_results.get("champion", "?")
+        ff      = tournament_results.get("final_four", [])
+        ff_str  = "  |  ".join(f for f in ff if f != champ)
+        print("  Champion:   " + champ)
+        print("  Final Four: " + ff_str)
+        cinderellas = tournament_results.get("cinderellas", [])
+        _round_labels = {
+            "sweet_16": "Sweet 16", "elite_8": "Elite 8",
+            "final_four": "Final Four", "champion": "Champion",
+            "r32": "Round of 32", "r64": "First Round",
+        }
+        for c in cinderellas:
+            name, seed, round_ = c
+            print("  Cinderella: " + name + " (seed " + str(seed) + ") -- " +
+                  _round_labels.get(round_, round_))
+
+    # Throne
+    print("")
+    blue_bloods = sorted(
+        [p for p in all_programs if p["prestige_current"] >= BLUE_BLOOD_THRESHOLD],
+        key=lambda p: p["prestige_current"], reverse=True
+    )
+    at_gate = [p for p in all_programs if 94.5 <= p["prestige_current"] < BLUE_BLOOD_THRESHOLD]
+    bb_names = ", ".join(p["name"] for p in blue_bloods) or "EMPTY"
+    gate_names = ", ".join(p["name"] for p in sorted(at_gate, key=lambda p: -p["prestige_current"])) or "none"
+    print("  Throne (" + str(len(blue_bloods)) + "/4): " + bb_names)
+    if at_gate:
+        print("  At gate:    " + gate_names)
+
+    # Tier distribution
+    print("")
+    print_tier_snapshot(all_programs, season_year)
+
+    # Carousel summary
+    changes = carousel_report.get("changes", [])
+    fired   = sum(1 for c in changes if c["reason"] == "fired")
+    left    = sum(1 for c in changes if c["reason"] in ("resigned", "poached"))
+    retired = sum(1 for c in changes if c.get("trigger") == "retirement")
+    print("")
+    print("  Carousel: " +
+          str(fired) + " fired  " +
+          str(left) + " departed  " +
+          str(retired) + " retired  |  " +
+          "free agents: " + str(len(free_agent_pool)))
 
 
 # -----------------------------------------
@@ -1500,10 +1530,6 @@ if __name__ == "__main__":
             all_programs, season_year=year, verbose=True,
             free_agent_pool=free_agent_pool
         )
-        print_prestige_movers(all_programs, start_prestiges, year)
-        print_blue_blood_throne(all_programs, year)
-        print_tier_snapshot(all_programs, year)
-        print_ceiling_breakers(all_programs, year)
         start_prestiges = {p["name"]: p["prestige_current"] for p in all_programs}
 
     print("")

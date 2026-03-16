@@ -615,9 +615,8 @@ def generate_staff(program_name, program_prestige=50):
       - Ambition drives whether they pursue head coaching jobs
 
     Grad assistant:
-      - Age 22-27 explicitly
-      - Experience 0-2 years
-      - Entry-level competence
+      - Generated via generate_ga_candidate()
+      - Low base competence, possible spike, random absorption lean
       - The pipeline's starting point
 
     Returns a list of 4 coach dicts.
@@ -629,9 +628,6 @@ def generate_staff(program_name, program_prestige=50):
     # --- 3 ASSISTANTS ---
     for _ in range(3):
         exp         = random.randint(2, 15)
-        # Competence scales with program prestige but capped lower than HC
-        # An assistant at Kentucky is better than one at Lamar, but neither
-        # is as polished as a head coach yet
         asst_prestige = max(20, min(75, program_prestige - random.randint(15, 30)))
         age         = max(25, min(65, 22 + exp + random.randint(0, 8)))
         name        = generate_coach_name()
@@ -642,16 +638,201 @@ def generate_staff(program_name, program_prestige=50):
         staff.append(coach)
 
     # --- 1 GRAD ASSISTANT ---
-    ga_age  = random.randint(22, 27)
-    ga_exp  = random.randint(0, 2)
-    ga_name = generate_coach_name()
-    ga      = generate_coach(ga_name, prestige=max(15, program_prestige - 40),
-                              experience=ga_exp, age=ga_age)
-    ga["staff_role"]       = "grad_assistant"
-    ga["seasons_on_staff"] = random.randint(0, ga_exp)
+    ga = generate_ga_candidate(program_prestige)
     staff.append(ga)
 
     return staff
+
+
+# -----------------------------------------
+# GRAD ASSISTANT SYSTEM
+# -----------------------------------------
+
+# The 8 competence attributes GAs can develop
+_GA_COMPETENCE_ATTRS = [
+    "offensive_skill", "defensive_skill", "player_development", "tactics",
+    "in_game_adaptability", "scheme_adaptability", "recruiting_attraction", "roster_fit"
+]
+
+# Probability that a GA gets a spike on one attribute
+_GA_SPIKE_CHANCE = 0.30
+_GA_SPIKE_BONUS  = (4, 7)   # range of spike bonus above baseline
+
+
+def generate_ga_candidate(program_prestige=50):
+    """
+    Generates a single grad assistant candidate.
+
+    Base competence: 5-9 across all 8 ratings (raw, not prestige-scaled).
+    Spike: 30% chance one attribute is +4 to +6 above the base.
+    Absorption lean: 2-3 attributes designated as primary development
+      targets for this GA's career. Set at generation, never changes.
+
+    The GA will absorb points in these lean attributes faster than others.
+    """
+    from names import generate_coach_name
+
+    ga_age = random.randint(22, 27)
+    ga_exp = random.randint(0, 1)
+    name   = generate_coach_name()
+
+    # Generate with low prestige so competence stays low
+    ga = generate_coach(name, prestige=max(10, program_prestige - 50),
+                        experience=ga_exp, age=ga_age)
+    ga["staff_role"]          = "grad_assistant"
+    ga["seasons_on_staff"]    = 0
+    ga["ga_tenure_max"]       = random.randint(2, 3)  # seasons before aging out
+
+    # Force low base competence regardless of prestige calculation
+    for attr in _GA_COMPETENCE_ATTRS:
+        ga[attr] = random.randint(5, 9)
+
+    # Spike: 30% chance -- one attribute stands out
+    ga["ga_spike_attr"] = None
+    if random.random() < _GA_SPIKE_CHANCE:
+        spike_attr = random.choice(_GA_COMPETENCE_ATTRS)
+        bonus      = random.randint(*_GA_SPIKE_BONUS)
+        ga[spike_attr]      = min(20, ga[spike_attr] + bonus)
+        ga["ga_spike_attr"] = spike_attr
+
+    # Absorption lean: 2-3 attributes get the bulk of development
+    num_lean = random.randint(2, 3)
+    lean_attrs = random.sample(_GA_COMPETENCE_ATTRS, num_lean)
+    ga["ga_absorption_lean"] = lean_attrs
+
+    return ga
+
+
+def generate_ga_pool(program_prestige=50, pool_size=5):
+    """
+    Generates a pool of GA candidates for a program to choose from.
+    Auto-sim picks the best fit. User picks manually when UI exists.
+    Returns a list of pool_size GA dicts.
+    """
+    return [generate_ga_candidate(program_prestige) for _ in range(pool_size)]
+
+
+def select_ga_auto(ga_pool, head_coach):
+    """
+    Auto-selects the best GA candidate based on head coach system fit.
+    Picks the GA whose lean attributes best match the coach's top competences.
+
+    Used in auto-sim. In user mode, the player picks from ga_pool directly.
+    """
+    if not ga_pool:
+        return None
+
+    hc_top = sorted(
+        _GA_COMPETENCE_ATTRS,
+        key=lambda a: head_coach.get(a, 10),
+        reverse=True
+    )[:3]
+
+    best_ga    = None
+    best_score = -1
+
+    for ga in ga_pool:
+        lean = ga.get("ga_absorption_lean", [])
+        # Score = overlap between GA lean and HC top competences
+        overlap = sum(1 for attr in lean if attr in hc_top)
+        # Bonus for spike in HC's top area
+        spike   = ga.get("ga_spike_attr")
+        if spike and spike in hc_top:
+            overlap += 1
+        if overlap > best_score:
+            best_score = overlap
+            best_ga    = ga
+
+    return best_ga
+
+
+def absorb_staff_development(ga, head_coach, staff):
+    """
+    Applies one season of staff absorption to a grad assistant.
+
+    Total points this season: random 3-8 (variance -- some GAs learn a ton,
+    some barely improve).
+
+    Distribution:
+      30% of points weighted toward the staff's strongest competence areas.
+      70% of points allocated by the GA's own absorption lean.
+
+    Points never push an attribute above 18 (GAs aren't finished products).
+    Returns modified ga dict.
+    """
+    if not ga or ga.get("staff_role") != "grad_assistant":
+        return ga
+
+    total_points = random.randint(3, 8)
+    lean_attrs   = ga.get("ga_absorption_lean", random.sample(_GA_COMPETENCE_ATTRS, 2))
+
+    # --- STAFF INFLUENCE (30%) ---
+    staff_points = max(1, int(total_points * 0.30))
+    # Find staff's strongest areas (head coach + assistants)
+    all_staff = [head_coach] + [m for m in staff
+                                if m.get("staff_role") == "assistant"]
+    staff_strengths = {}
+    for attr in _GA_COMPETENCE_ATTRS:
+        staff_strengths[attr] = sum(s.get(attr, 10) for s in all_staff) / max(1, len(all_staff))
+
+    top_staff_attrs = sorted(staff_strengths, key=staff_strengths.get, reverse=True)[:3]
+
+    # Distribute staff points across top staff attrs
+    for _ in range(staff_points):
+        attr = random.choice(top_staff_attrs)
+        ga[attr] = min(18, ga.get(attr, 5) + 1)
+
+    # --- NATURAL LEAN (70%) ---
+    lean_points = total_points - staff_points
+    # Weight distribution: lean attrs get 80% of lean points, others get crumbs
+    for _ in range(lean_points):
+        if random.random() < 0.80:
+            attr = random.choice(lean_attrs)
+        else:
+            attr = random.choice(_GA_COMPETENCE_ATTRS)
+        ga[attr] = min(18, ga.get(attr, 5) + 1)
+
+    return ga
+
+
+def age_out_ga(ga, program, free_agent_pool):
+    """
+    Checks if a GA should age out of their position.
+    Called each offseason after absorption.
+
+    If GA has served ga_tenure_max seasons, they exit:
+      - If program has an open assistant slot (less than 3 assistants): promoted
+      - Otherwise: enters free agent pool as an assistant-level coach
+
+    Returns (should_replace, updated_free_agent_pool).
+    should_replace = True means program needs a new GA next offseason.
+    """
+    if ga.get("staff_role") != "grad_assistant":
+        return False, free_agent_pool
+
+    seasons     = ga.get("seasons_on_staff", 0)
+    tenure_max  = ga.get("ga_tenure_max", 2)
+
+    if seasons < tenure_max:
+        return False, free_agent_pool
+
+    # GA is aging out -- promote to assistant role
+    ga["staff_role"]       = "assistant"
+    ga["experience"]       = max(1, ga.get("experience", 0) + seasons)
+    ga["free_agent_seasons"] = 0
+
+    # Check if program has room for another assistant
+    current_staff    = program.get("coaching_staff", [])
+    assistant_count  = sum(1 for m in current_staff
+                           if m.get("staff_role") == "assistant")
+
+    if assistant_count < 3:
+        # Promote in place -- stays on this staff as an assistant
+        return True, free_agent_pool
+    else:
+        # No room -- enters free agent pool
+        free_agent_pool.append(ga)
+        return True, free_agent_pool
 
 
 def seed_legacy_coach(coach, prestige):

@@ -40,7 +40,9 @@ import random
 from coach import (generate_coach, ensure_coach_carousel_attrs,
                    calculate_style_fit, is_breakout_candidate,
                    update_coach_buzz_history, check_retirement,
-                   update_coach_age, record_job_change, get_age_inertia)
+                   update_coach_age, record_job_change, get_age_inertia,
+                   generate_ga_pool, select_ga_auto, absorb_staff_development,
+                   age_out_ga)
 from player import ensure_player_carousel_attrs
 from program import (ensure_carousel_state, get_firing_threshold,
                      update_stale_meter, update_coaching_capital,
@@ -151,6 +153,9 @@ def run_coaching_carousel(all_programs, season_year, free_agent_pool=None, verbo
     # Age all head coaches and staff by 1 season
     _age_all_coaches(all_programs, free_agent_pool)
 
+    # Process grad assistants: absorption + aging out
+    free_agent_pool = _process_grad_assistants(all_programs, free_agent_pool, verbose)
+
     # Run retirement checks on free agents -- those who've waited too long exit
     free_agent_pool = _clean_free_agent_pool(free_agent_pool, season_year, verbose)
 
@@ -180,6 +185,7 @@ def run_coaching_carousel(all_programs, season_year, free_agent_pool=None, verbo
               "  median: " + str(round(securities[len(securities)//2], 1)) +
               "  below 40: " + str(below_40) +
               "  below 25: " + str(below_25))
+        print("  Free agent pool: " + str(len(free_agent_pool)) + " coaches available")
 
     all_programs, hire_log, free_agent_pool = _run_job_market(
         all_programs, changes, season_year, free_agent_pool, verbose
@@ -205,6 +211,52 @@ def run_coaching_carousel(all_programs, season_year, free_agent_pool=None, verbo
     }
 
     return all_programs, carousel_report, portal_additions, free_agent_pool
+
+
+def _process_grad_assistants(all_programs, free_agent_pool, verbose):
+    """
+    Each offseason:
+      1. Apply absorption to each program's active GA
+      2. Increment GA seasons_on_staff
+      3. Check if GA ages out -- promote to assistant or send to free agent pool
+      4. If GA aged out, generate new GA pool and auto-select replacement
+
+    In user mode, step 4 would present the pool for the user to pick from.
+    For now, auto-selects best fit for head coach's system.
+    """
+    for program in all_programs:
+        staff      = program.get("coaching_staff", [])
+        head_coach = program.get("coach", {})
+
+        # Find active GA
+        ga = next((m for m in staff if m.get("staff_role") == "grad_assistant"), None)
+
+        if ga is None:
+            # No GA -- generate one
+            new_ga = generate_ga_pool(program.get("prestige_current", 50), pool_size=1)[0]
+            program["coaching_staff"] = staff + [new_ga]
+            continue
+
+        # Apply absorption for this season
+        absorb_staff_development(ga, head_coach, staff)
+        ga["seasons_on_staff"] = ga.get("seasons_on_staff", 0) + 1
+
+        # Check aging out
+        should_replace, free_agent_pool = age_out_ga(ga, program, free_agent_pool)
+
+        if should_replace:
+            # Remove aged-out GA from staff (it's already been promoted or
+            # sent to free agent pool by age_out_ga)
+            program["coaching_staff"] = [m for m in staff
+                                         if m.get("staff_role") != "grad_assistant"]
+
+            # Auto-select new GA from a fresh pool
+            ga_pool = generate_ga_pool(program.get("prestige_current", 50), pool_size=5)
+            new_ga  = select_ga_auto(ga_pool, head_coach)
+            if new_ga:
+                program["coaching_staff"].append(new_ga)
+
+    return free_agent_pool
 
 
 # -----------------------------------------
@@ -892,9 +944,18 @@ def _generate_new_hire(program, ad_profile, season_year):
     coach_name = generate_coach_name()
     board_patience = program.get("carousel_state", {}).get("board_patience", 5)
 
-    if ad_profile == "veteran_preferred":   experience = random.randint(10, 25)
-    elif ad_profile == "analytics_forward": experience = random.randint(0, 8)
-    else:                                   experience = random.randint(3, 18)
+    # Minimum experience floors by AD profile.
+    # No program hires a head coach with zero HC experience --
+    # even "fresh" hires have been assistants/grad assistants.
+    # analytics_forward ADs take the most risk on young coaches.
+    if ad_profile == "veteran_preferred":
+        experience = random.randint(10, 25)
+    elif ad_profile == "analytics_forward":
+        experience = random.randint(3, 12)
+    elif ad_profile == "opportunist":
+        experience = random.randint(4, 18)
+    else:
+        experience = random.randint(5, 20)
 
     return generate_coach(coach_name, prestige=prestige,
                           experience=experience, board_patience=board_patience)
