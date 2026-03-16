@@ -12,6 +12,8 @@ from lifecycle import advance_season, print_lifecycle_summary
 from conference_tournament import simulate_all_conference_tournaments
 from tournament import simulate_ncaa_tournament, print_tournament_summary
 from transfer_portal import run_transfer_portal, print_portal_summary
+from coaching_carousel import run_coaching_carousel, print_carousel_report
+from program import update_stale_meter, update_coaching_capital
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Season Calendar v0.7
@@ -659,7 +661,15 @@ def update_job_security(program, win_pct, conf_finish_percentile):
     """
     Updates job_security based on performance vs gravity expectations.
     Blue bloods are less patient -- erode security faster when results disappoint.
-    Floor: 10. Ceiling: 100.
+
+    TUNING TARGETS:
+      A coach going 3 bad seasons in a row should reach firing threshold.
+      A coach going 5+ bad seasons should definitely be fired.
+      A good season buys back some runway but not a full reset.
+      Blue blood / impatient boards fire faster.
+
+    Floor: 5 (not 10 -- needs to be reachable for firing thresholds to matter).
+    Ceiling: 100.
     """
     gravity          = program["prestige_gravity"]
     security         = program.get("job_security", 75)
@@ -667,20 +677,25 @@ def update_job_security(program, win_pct, conf_finish_percentile):
     gap              = win_pct - expected_pct
     impatience_scale = 0.5 + (gravity / 100) * 1.0
 
-    if gap > 0.10:
-        delta = 3.0 + (gap * 10)
-    elif gap > 0:
-        delta = 1.0
-    elif gap > -0.10:
-        delta = -2.0 * impatience_scale
+    # Performance delta -- sharpened erosion, capped recovery
+    if gap > 0.15:
+        delta = 4.0 + (gap * 8)        # great season: +5 to +8
+    elif gap > 0.05:
+        delta = 2.0                    # solid season: +2
+    elif gap > -0.05:
+        delta = -1.5 * impatience_scale  # near-expectation: small bleed
+    elif gap > -0.15:
+        delta = (-5.0) * impatience_scale  # bad season: -2.5 to -7.5
     else:
-        delta = (-4.0 - (abs(gap) * 15)) * impatience_scale
+        delta = (-9.0 - (abs(gap) * 12)) * impatience_scale  # terrible: -5 to -18
 
+    # Conference finish penalty -- bottom half costs extra
     if conf_finish_percentile < 0.50:
         bottom_half_gap = 0.50 - conf_finish_percentile
-        delta -= bottom_half_gap * 4.0 * impatience_scale
+        delta -= bottom_half_gap * 6.0 * impatience_scale
 
-    new_security = max(10, min(100, security + delta))
+    # Floor is 5, not 10 -- must be below all firing thresholds
+    new_security = max(5, min(100, security + delta))
     program["job_security"] = round(new_security, 1)
     return program
 
@@ -989,6 +1004,9 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
         apply_gravity_drift(p, season_year, win_pct, conf_finish_percentile)
         recalculate_gravity_pull_rate(p)
         update_job_security(p, win_pct, conf_finish_percentile)
+        # Stale meter -- floor_conf and low_major programs accumulate stagnation
+        made_ncaa = p.get("ncaa_tournament_result", {}).get("seed") is not None
+        update_stale_meter(p, conf_finish_percentile, made_tournament=made_ncaa)
         apply_conference_tier_pressure(p)
         apply_conference_identity_pull(p, conf_finish_percentile)
         update_blue_blood_state(p)
@@ -1084,6 +1102,20 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     # Step 4b: Blue blood throne check
     run_blue_blood_throne_check(all_programs, season_year, verbose=verbose)
 
+    # Step 4c: Coaching capital update (tournament performance -> coach runway)
+    for program in all_programs:
+        ncaa_result    = program.get("ncaa_tournament_result", {})
+        tourney_result = ncaa_result.get("result", "none")
+        update_coaching_capital(program, tourney_result, season_year)
+
+    # Step 4d: Coaching carousel
+    # Runs BEFORE transfer portal -- coaching changes trigger portal wave entries
+    all_programs, carousel_report, carousel_portal_additions = run_coaching_carousel(
+        all_programs, season_year=season_year, verbose=verbose
+    )
+    if verbose:
+        print_carousel_report(carousel_report)
+
     if verbose:
         print("")
         print("--- " + str(season_year) + " Recruiting Cycle ---")
@@ -1139,12 +1171,12 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         tourney_result = ncaa_result.get("result", "none")
         apply_buzz_decay(program, made_tourney, tourney_result, season_year)
 
-    # Step 9: Transfer portal entry filter
-    # Players evaluate their situation and decide whether to enter the portal.
-    # Portal players are removed from rosters before recruiting runs.
-    # Destination matching is stubbed -- portal players currently exit the world.
+    # Step 9: Transfer portal
+    # Carousel portal wave additions are injected here -- they skip the entry
+    # filter (already removed from rosters) but go through destination matching.
     all_programs, portal_pool, portal_report = run_transfer_portal(
-        all_programs, season_year=season_year, verbose=verbose
+        all_programs, season_year=season_year, verbose=verbose,
+        extra_portal_players=carousel_portal_additions
     )
 
     return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report
@@ -1310,7 +1342,7 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
-    for year in range(2024, 2029):
+    for year in range(2024, 2030):
         all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report = simulate_world_season(
             all_programs, season_year=year, verbose=True
         )
