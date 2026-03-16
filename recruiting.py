@@ -245,17 +245,28 @@ SERVICE_NOISE = {
 
 # -----------------------------------------
 # OUTLIER AND GENERATIONAL TALENT RATES
-# Per-recruit probabilities. Pool is ~4500/season.
+#
+# PER-RECRUIT (scales with pool size -- realistic):
+#   Physical accidents of nature. More recruits = more of them.
+#   A 15,000-recruit pool should produce more 5'6" kids trying to
+#   play ball than a 4,500 pool. These stay per-recruit.
+#
+# PER-SEASON (fixed regardless of pool size -- by design):
+#   Generational talents and skilled giants are once-in-a-generation
+#   anomalies. They don't become more common because you added D2.
+#   The roll happens once per class generation. One recruit in the
+#   pool gets the flag. Scaling to 15,000 does NOT produce 3x LeBrons.
 # -----------------------------------------
 
-# Physical outlier rates (checked per recruit at generation)
-OUTLIER_SHORT_RATE       = 1 / 800      # 5'4"-5'8" PG/SG
-OUTLIER_TALL_NOSKILL_RATE = 1 / 600     # 7'3"-7'5" C, poor skills
-OUTLIER_TALL_SKILL_RATE  = 1 / 15000    # 7'3"-7'5" C, real skills
+# Per-recruit rates (scale naturally with pool size)
+OUTLIER_SHORT_RATE        = 1 / 800    # 5'4"-5'8" PG/SG
+OUTLIER_TALL_NOSKILL_RATE = 1 / 600    # 7'3"-7'5" C, poor skills
 
-# Generational talent rates
-GENERATIONAL_PHENOM_RATE      = 1 / 33000   # ~1 every 10 seasons
-GENERATIONAL_LATE_BLOOM_RATE  = 1 / 50000   # ~1 every 15 seasons
+# Per-season rates (fixed regardless of pool size)
+# generate_recruiting_class() rolls these once and stamps one recruit
+SEASON_TALL_SKILL_CHANCE   = 1 / 5     # ~1 skilled giant every 5 seasons
+SEASON_PHENOM_CHANCE       = 1 / 10    # ~1 phenom every 10 seasons
+SEASON_LATE_BLOOMER_CHANCE = 1 / 15    # ~1 late bloomer every 15 seasons
 
 
 def talent_to_stars(talent_score):
@@ -270,40 +281,26 @@ def talent_to_stars(talent_score):
 # OUTLIER AND GENERATIONAL TALENT GENERATORS
 # -----------------------------------------
 
-def _check_outlier_and_generational(position):
+def _check_outlier_per_recruit(position):
     """
-    Rolls for outlier physical profiles and generational talent flags.
-    Called once per recruit at generation. Most recruits return None, None.
+    Rolls for per-recruit physical outlier flags only.
+    Generational talents and skilled giants are handled at the class
+    level in generate_recruiting_class() -- they are per-season events,
+    not per-recruit rolls. Pool size does not affect their frequency.
 
-    Returns (outlier_type, generational_type) where both can be None.
-    Outlier types:   "short", "tall_noskill", "tall_skill"
-    Generational:    "phenom", "late_bloomer_generational"
-
-    Generational takes priority -- a phenom is never also flagged
-    as a short outlier. They're separate systems.
+    Returns outlier_type: "short", "tall_noskill", or None.
     """
-    # Generational check first (rarest, highest priority)
-    roll = random.random()
-    if roll < GENERATIONAL_PHENOM_RATE:
-        return None, "phenom"
-    if roll < GENERATIONAL_PHENOM_RATE + GENERATIONAL_LATE_BLOOM_RATE:
-        return None, "late_bloomer_generational"
-
-    # Physical outlier checks -- position-gated
-    # Short outliers only make sense for guard positions
+    # Short outliers only for guard positions
     if position in ("PG", "SG"):
         if random.random() < OUTLIER_SHORT_RATE:
-            return "short", None
+            return "short"
 
-    # Tall outliers only for C (occasionally PF)
+    # Tall no-skill only for C (occasionally PF)
     if position == "C" or (position == "PF" and random.random() < 0.2):
-        roll2 = random.random()
-        if roll2 < OUTLIER_TALL_SKILL_RATE:
-            return "tall_skill", None
-        elif roll2 < OUTLIER_TALL_SKILL_RATE + OUTLIER_TALL_NOSKILL_RATE:
-            return "tall_noskill", None
+        if random.random() < OUTLIER_TALL_NOSKILL_RATE:
+            return "tall_noskill"
 
-    return None, None
+    return None
 
 
 def _apply_outlier_physical(recruit, outlier_type, position):
@@ -464,8 +461,12 @@ def generate_recruit(position, true_talent, season,
 
     home_state = _pick_home_state()
 
-    # --- CHECK FOR OUTLIER / GENERATIONAL ---
-    outlier_type, generational_type = _check_outlier_and_generational(position)
+    # --- CHECK FOR PER-RECRUIT PHYSICAL OUTLIER ---
+    # Generational talents and skilled giants are injected by the caller
+    # (generate_recruiting_class) as per-season events. This only rolls
+    # the per-recruit physical outliers (short guard, tall no-skill).
+    outlier_type     = _check_outlier_per_recruit(position)
+    generational_type = None   # stamped by generate_recruiting_class if applicable
 
     # --- GENERATE PHYSICAL SIZE ---
     # Outlier height overridden after normal generation
@@ -853,7 +854,18 @@ def generate_recruiting_class(season):
 
     Ranked players get composite_rank 1-N.
     Developmental/depth players get composite_rank = None.
+
+    v0.6: Per-season special events rolled here, not per-recruit.
+    Pool size does not affect frequency of generational talents or
+    skilled giants. One recruit in the pool gets the flag stamped.
     """
+    # --- PER-SEASON SPECIAL EVENT ROLLS ---
+    # These happen regardless of pool size. Adding D2/JUCO later
+    # will not make generational talents more common.
+    phenom_this_season      = random.random() < SEASON_PHENOM_CHANCE
+    late_bloomer_this_season = random.random() < SEASON_LATE_BLOOMER_CHANCE
+    tall_skill_this_season   = random.random() < SEASON_TALL_SKILL_CHANCE
+
     ranked_recruits = []
     depth_recruits  = []
 
@@ -879,6 +891,83 @@ def generate_recruiting_class(season):
                     ranked_recruits.append(recruit)
                 else:
                     depth_recruits.append(recruit)
+
+    # --- STAMP PER-SEASON SPECIAL EVENTS ---
+    # Pick one eligible recruit from the full pool and apply the flag.
+    # Phenoms must be in ranked pool (they'd be found by scouts).
+    # Late bloomers and skilled giants can be anywhere.
+    all_recruits = ranked_recruits + depth_recruits
+
+    if tall_skill_this_season:
+        eligible = [r for r in all_recruits
+                    if r["position"] in ("C", "PF")
+                    and not r.get("outlier_type")]
+        if eligible:
+            chosen = random.choice(eligible)
+            chosen["outlier_type"] = "tall_skill"
+
+            # Enforce true_talent floor -- a skilled 7'4" guy is a real
+            # player. Programs need to be able to find and recruit him.
+            # Floor of 40 means he shows up as a 2-star with real upside.
+            # Without this, his true_talent could be 1 and no program's
+            # recruiting logic would ever surface him.
+            TT_FLOOR = 40
+            if chosen["true_talent"] < TT_FLOOR:
+                chosen["true_talent"] = random.randint(TT_FLOOR, 60)
+                # Recalculate potential to match
+                pf, pc = _generate_potential(chosen["true_talent"])
+                chosen["potential_floor"]   = pf
+                chosen["potential_ceiling"] = pc
+                # Recalculate service ratings to match new true_talent
+                for service, (nl, nh) in SERVICE_NOISE.items():
+                    noise = random.randint(nl, nh)
+                    sr    = max(1, min(100, chosen["true_talent"] + noise))
+                    key   = {"247Sports": "stars_247",
+                             "Rivals": "stars_rivals",
+                             "ESPN": "stars_espn"}[service]
+                    chosen[key] = talent_to_stars(sr)
+                chosen["stars_consensus"] = _consensus_stars({
+                    "247Sports": chosen["stars_247"],
+                    "Rivals":    chosen["stars_rivals"],
+                    "ESPN":      chosen["stars_espn"],
+                })
+                chosen["is_ranked"] = True
+
+            _apply_outlier_physical(chosen, "tall_skill", chosen["position"])
+            attrs = {k: chosen[k] for k in ALL_ATTRIBUTES if k in chosen}
+            attrs = _apply_outlier_attributes(
+                attrs, "tall_skill", chosen["position"],
+                chosen["true_talent"], (chosen["true_talent"]-1)/99.0
+            )
+            for k, v in attrs.items():
+                chosen[k] = v
+
+    if phenom_this_season:
+        eligible = [r for r in ranked_recruits
+                    if not r.get("generational_talent")
+                    and not r.get("outlier_type")]
+        if eligible:
+            chosen = random.choice(eligible)
+            attrs  = {k: chosen[k] for k in ALL_ATTRIBUTES if k in chosen}
+            chosen, attrs = _apply_generational_attributes(
+                chosen, "phenom", chosen["position"], attrs
+            )
+            for k, v in attrs.items():
+                chosen[k] = v
+
+    if late_bloomer_this_season:
+        eligible = [r for r in all_recruits
+                    if not r.get("generational_talent")
+                    and not r.get("outlier_type")]
+        if eligible:
+            chosen = random.choice(eligible)
+            attrs  = {k: chosen[k] for k in ALL_ATTRIBUTES if k in chosen}
+            chosen, attrs = _apply_generational_attributes(
+                chosen, "late_bloomer_generational",
+                chosen["position"], attrs
+            )
+            for k, v in attrs.items():
+                chosen[k] = v
 
     # Sort ranked players by stars then true_talent
     ranked_recruits.sort(
