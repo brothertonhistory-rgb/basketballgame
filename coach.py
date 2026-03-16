@@ -375,6 +375,21 @@ def generate_coach(name, prestige=50, archetype=None, experience=None,
         "ambition":          ambition,
         "rebuild_tolerance": rebuild_tolerance,
         "loyalty":           loyalty,
+        # MONEY MOTIVATION -- separate from ambition
+        # High greed coaches will take lateral/step-down moves for bigger paychecks
+        # Low greed coaches won't leave comfort for money alone
+        "greed": _rand_carousel(10 + random.randint(-2, 2)),
+        # JOB STABILITY TRACKING
+        # cooldown counts seasons since last job change -- suppresses willingness to move again
+        "job_change_cooldown":    0,
+        # instability_reputation builds with rapid job changes, decays slowly
+        # programs check this before hiring -- serial job-hoppers get avoided
+        "instability_reputation": 0,
+        # SALARY
+        # salary_current: what they made at their last job (0 if never been HC)
+        # salary_floor: minimum they'll accept (rises with experience/last salary)
+        "salary_current": 0,
+        "salary_floor":   _calc_salary_floor(prestige, experience),
         # PHILOSOPHY SLIDERS
         "pace":           philosophy["pace"],
         "shot_profile":   philosophy["shot_profile"],
@@ -427,6 +442,163 @@ def generate_coach(name, prestige=50, archetype=None, experience=None,
     }
 
     return coach
+
+
+# -----------------------------------------
+# SALARY SYSTEM
+# -----------------------------------------
+
+# Base salary by prestige tier (annual, USD)
+# These are the midpoints -- actual budgets vary by investment_appetite
+_SALARY_BY_PRESTIGE = [
+    (95,  8_000_000),
+    (79,  4_000_000),
+    (59,  2_000_000),
+    (39,    900_000),
+    (21,    400_000),
+    ( 1,    200_000),
+]
+
+def _calc_salary_floor(prestige, experience):
+    """
+    Returns the minimum salary a coach will accept.
+    Scales with prestige of last job and experience.
+    A coach coming off a $3M job won't take $300K unless desperate.
+    """
+    base = 200_000
+    for threshold, salary in _SALARY_BY_PRESTIGE:
+        if prestige >= threshold:
+            base = salary
+            break
+    # Experience modifier: veteran coaches expect more
+    exp_mult = 1.0 + min(0.5, experience / 50.0)
+    # Floor is 60% of base -- they'll take a discount but not a collapse
+    return int(base * 0.60 * exp_mult)
+
+
+def calc_program_budget(prestige, investment_appetite=5):
+    """
+    Returns annual basketball coaching budget for a program.
+    investment_appetite (1-10) scales the budget within the prestige tier.
+    Called by program.py create_program() and ensure_program_budget().
+    """
+    base = 200_000
+    for threshold, salary in _SALARY_BY_PRESTIGE:
+        if prestige >= threshold:
+            base = salary
+            break
+    # investment_appetite shifts budget ±40% around the base
+    appetite_mult = 0.60 + (investment_appetite / 10.0) * 0.80
+    return int(base * appetite_mult)
+
+
+# -----------------------------------------
+# RETIREMENT CHECK
+# -----------------------------------------
+
+# Retirement probability curve by age bracket
+# (min_age, base_prob_per_season)
+_RETIREMENT_AGE_CURVE = [
+    (72, 0.35),
+    (68, 0.20),
+    (63, 0.10),
+    (58, 0.04),
+    (50, 0.01),
+    ( 0, 0.001),   # tiny random factor for everyone -- health, pro jobs, burnout
+]
+
+def check_retirement(coach, just_fired=False):
+    """
+    Returns True if this coach retires this offseason.
+
+    Probabilistic -- no hard age cutoff. Factors:
+      - Age (primary driver)
+      - Ambition (suppresses retirement -- driven coaches coach longer)
+      - Greed (slight suppressor -- money keeps them going)
+      - just_fired (bump -- indignity of firing accelerates exit for older coaches)
+      - free_agent_seasons (multiple seasons without work = higher exit chance)
+
+    The tiny baseline (0.001) applies to everyone regardless of age --
+    simulates pro opportunities, health events, personal decisions.
+    """
+    age              = coach.get("age", 45)
+    ambition         = coach.get("ambition", 10)
+    greed            = coach.get("greed", 10)
+    free_agent_seasons = coach.get("free_agent_seasons", 0)
+
+    # Base probability from age curve
+    base_prob = 0.001
+    for min_age, prob in _RETIREMENT_AGE_CURVE:
+        if age >= min_age:
+            base_prob = prob
+            break
+
+    # Ambition suppresses retirement -- scale: ambition 20 = 50% reduction
+    ambition_suppress = (ambition / 20.0) * 0.50
+    # Greed suppresses slightly -- money keeps them going
+    greed_suppress    = (greed / 20.0) * 0.15
+
+    prob = base_prob * (1.0 - ambition_suppress - greed_suppress)
+
+    # Being fired (especially when older) nudges toward retirement
+    if just_fired and age >= 55:
+        prob += 0.08 + (age - 55) * 0.01
+
+    # Multiple seasons without work -- market has spoken
+    if free_agent_seasons >= 3:
+        prob += 0.15
+    elif free_agent_seasons >= 2:
+        prob += 0.07
+
+    return random.random() < max(0.0001, prob)
+
+
+def update_coach_age(coach):
+    """Increments coach age by 1. Called once per season."""
+    coach["age"] = coach.get("age", 45) + 1
+    # Increment cooldown decay
+    cooldown = coach.get("job_change_cooldown", 0)
+    if cooldown > 0:
+        coach["job_change_cooldown"] = max(0, cooldown - 1)
+    # Instability reputation decays slowly
+    rep = coach.get("instability_reputation", 0)
+    if rep > 0:
+        coach["instability_reputation"] = max(0, rep - 5)
+    return coach
+
+
+def record_job_change(coach):
+    """
+    Records a job change on the coach dict.
+    Builds instability_reputation for rapid movers.
+    Called by coaching_carousel when a coach is hired.
+    """
+    cooldown = coach.get("job_change_cooldown", 0)
+    # If they moved recently, reputation takes a hit
+    if cooldown > 0:
+        coach["instability_reputation"] = min(
+            100, coach.get("instability_reputation", 0) + 20
+        )
+    coach["job_change_cooldown"] = 3   # suppresses moving again for 3 seasons
+    return coach
+
+
+def get_age_inertia(coach):
+    """
+    Returns a multiplier (0.1 - 1.0) representing how willing a coach
+    is to uproot and move based on age.
+    Young coaches: full willingness (1.0)
+    55+: meaningfully reduced
+    62+: heavy reduction -- this might be their career job
+    70+: very unlikely to move unless massive offer
+    """
+    age = coach.get("age", 40)
+    if age >= 70: return 0.15
+    if age >= 65: return 0.30
+    if age >= 62: return 0.45
+    if age >= 58: return 0.65
+    if age >= 55: return 0.80
+    return 1.0
 
 
 def generate_staff(program_name, program_prestige=50):
@@ -595,6 +767,13 @@ def ensure_coach_carousel_attrs(coach):
     if "ambition"           not in coach: coach["ambition"]           = random.randint(6, 14)
     if "rebuild_tolerance"  not in coach: coach["rebuild_tolerance"]  = random.randint(6, 14)
     if "loyalty"            not in coach: coach["loyalty"]            = random.randint(6, 14)
+    if "greed"              not in coach: coach["greed"]              = random.randint(6, 14)
+    if "job_change_cooldown"    not in coach: coach["job_change_cooldown"]    = 0
+    if "instability_reputation" not in coach: coach["instability_reputation"] = 0
+    if "salary_current"     not in coach: coach["salary_current"]     = 0
+    if "salary_floor"       not in coach:
+        coach["salary_floor"] = _calc_salary_floor(
+            coach.get("experience", 5) * 5, coach.get("experience", 5))
     if "contract_years"     not in coach: coach["contract_years"]     = 3
     if "contract_years_remaining" not in coach: coach["contract_years_remaining"] = random.randint(1, 3)
     if "ncaa_wins_last_3"       not in coach: coach["ncaa_wins_last_3"]       = 0

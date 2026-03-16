@@ -39,11 +39,14 @@
 import random
 from coach import (generate_coach, ensure_coach_carousel_attrs,
                    calculate_style_fit, is_breakout_candidate,
-                   update_coach_buzz_history)
+                   update_coach_buzz_history, check_retirement,
+                   update_coach_age, record_job_change, get_age_inertia)
 from player import ensure_player_carousel_attrs
 from program import (ensure_carousel_state, get_firing_threshold,
                      update_stale_meter, update_coaching_capital,
-                     record_buyout, get_hot_seat_reputation)
+                     record_buyout, get_hot_seat_reputation,
+                     ensure_program_budget, get_effective_budget,
+                     tick_budget_spike, apply_booster_spike)
 from names import generate_coach_name
 
 # -----------------------------------------
@@ -119,22 +122,43 @@ STYLE_FIT_GOOD  = 65
 STYLE_FIT_BAD   = 40
 STYLE_FIT_DECAY = 0.15
 
+# Free agent pool: coaches who have been without a job this many seasons retire
+FREE_AGENT_MAX_SEASONS = 3
+
+# Instability reputation threshold -- programs check before hiring
+INSTABILITY_CONCERN_THRESHOLD = 40   # raises eyebrows
+INSTABILITY_TOXIC_THRESHOLD   = 70   # most programs won't touch them
+
 
 # -----------------------------------------
 # MAIN ENTRY POINT
 # -----------------------------------------
 
-def run_coaching_carousel(all_programs, season_year, verbose=True):
+def run_coaching_carousel(all_programs, season_year, free_agent_pool=None, verbose=True):
+    if free_agent_pool is None:
+        free_agent_pool = []
+
     for program in all_programs:
         ensure_carousel_state(program)
+        ensure_program_budget(program)
+        tick_budget_spike(program)
+        apply_booster_spike(program)
         coach = program.get("coach", {})
         ensure_coach_carousel_attrs(coach)
         for player in program.get("roster", []):
             ensure_player_carousel_attrs(player, coach_id=coach.get("coach_id"))
 
+    # Age all head coaches and staff by 1 season
+    _age_all_coaches(all_programs, free_agent_pool)
+
+    # Run retirement checks on free agents -- those who've waited too long exit
+    free_agent_pool = _clean_free_agent_pool(free_agent_pool, season_year, verbose)
+
     _update_all_breakout_states(all_programs)
 
-    changes = _evaluate_all_programs(all_programs, season_year, verbose)
+    changes = _evaluate_all_programs(
+        all_programs, season_year, free_agent_pool, verbose
+    )
 
     if verbose:
         fired      = [c for c in changes if c["reason"] == "fired"]
@@ -157,8 +181,8 @@ def run_coaching_carousel(all_programs, season_year, verbose=True):
               "  below 40: " + str(below_40) +
               "  below 25: " + str(below_25))
 
-    all_programs, hire_log = _run_job_market(
-        all_programs, changes, season_year, verbose
+    all_programs, hire_log, free_agent_pool = _run_job_market(
+        all_programs, changes, season_year, free_agent_pool, verbose
     )
 
     _apply_style_fit_all(all_programs, changes)
@@ -177,9 +201,47 @@ def run_coaching_carousel(all_programs, season_year, verbose=True):
         "hire_log":         hire_log,
         "portal_additions": len(portal_additions),
         "impact_log":       impact_log,
+        "free_agent_pool_size": len(free_agent_pool),
     }
 
-    return all_programs, carousel_report, portal_additions
+    return all_programs, carousel_report, portal_additions, free_agent_pool
+
+
+# -----------------------------------------
+# FREE AGENT POOL + AGING HELPERS
+# -----------------------------------------
+
+def _age_all_coaches(all_programs, free_agent_pool):
+    """Ages all head coaches and free agents by 1 season."""
+    for program in all_programs:
+        coach = program.get("coach", {})
+        if coach:
+            update_coach_age(coach)
+    for coach in free_agent_pool:
+        update_coach_age(coach)
+
+
+def _clean_free_agent_pool(free_agent_pool, season_year, verbose):
+    """
+    Removes coaches from the free agent pool who have been waiting too long
+    or who decide to retire. Returns the cleaned pool.
+    """
+    survivors = []
+    for coach in free_agent_pool:
+        coach["free_agent_seasons"] = coach.get("free_agent_seasons", 0) + 1
+        if coach["free_agent_seasons"] >= FREE_AGENT_MAX_SEASONS:
+            if verbose:
+                print("  RETIRED (free agent): " + coach.get("name", "?") +
+                      " (age " + str(coach.get("age", "?")) +
+                      ", " + str(coach["free_agent_seasons"]) + " seasons without work)")
+            continue
+        if check_retirement(coach, just_fired=False):
+            if verbose:
+                print("  RETIRED: " + coach.get("name", "?") +
+                      " (age " + str(coach.get("age", "?")) + ", free agent)")
+            continue
+        survivors.append(coach)
+    return survivors
 
 
 # -----------------------------------------
@@ -210,10 +272,11 @@ def _update_all_breakout_states(all_programs):
 # PHASE 1: EVALUATE
 # -----------------------------------------
 
-def _evaluate_all_programs(all_programs, season_year, verbose):
+def _evaluate_all_programs(all_programs, season_year, free_agent_pool, verbose):
     """
     Evaluates every program for coaching changes.
     Contract protection suppresses firing threshold while coach is under deal.
+    Adds retirement check, greed-based lateral moves, and age inertia.
     """
     changes              = []
     claimed_destinations = set()
@@ -228,6 +291,17 @@ def _evaluate_all_programs(all_programs, season_year, verbose):
             continue
 
         _update_coach_career_record(program)
+
+        # --- RETIREMENT CHECK ---
+        just_fired = False  # set below if fired
+        if check_retirement(coach, just_fired=False):
+            changes.append(_build_change(program, "fired", "retirement"))
+            free_agent_pool  # retiring coaches don't enter pool
+            if verbose:
+                print("  RETIRED: " + program["name"] +
+                      " -- " + coach.get("name", "?") +
+                      " (age " + str(coach.get("age", "?")) + ")")
+            continue
 
         contract_remaining = coach.get("contract_years_remaining", 0)
         under_contract     = contract_remaining > 0
@@ -291,9 +365,20 @@ def _evaluate_all_programs(all_programs, season_year, verbose):
             continue
 
         # CHECK 4: VOLUNTARY DEPARTURE
-        ambition = coach.get("ambition", 10)
-        loyalty  = coach.get("loyalty", 10)
+        # Ambition drives prestige-seeking moves.
+        # Greed drives salary-seeking lateral moves.
+        # Age inertia suppresses both.
+        ambition    = coach.get("ambition", 10)
+        loyalty     = coach.get("loyalty", 10)
+        greed       = coach.get("greed", 10)
+        age_inertia = get_age_inertia(coach)
+        cooldown    = coach.get("job_change_cooldown", 0)
 
+        # Cooldown suppresses willingness to move again soon
+        if cooldown > 0:
+            continue
+
+        # AMBITION PATH: chase a better job
         if (ambition >= 14 and
                 security >= VOLUNTARY_DEPARTURE_MIN_SECURITY and
                 seasons >= 2):
@@ -306,7 +391,8 @@ def _evaluate_all_programs(all_programs, season_year, verbose):
                 prestige_gap = best_job["prestige_current"] - program["prestige_current"]
                 if prestige_gap >= VOLUNTARY_DEPARTURE_PRESTIGE_GAP:
                     loyalty_resist = loyalty / 20.0
-                    leave_chance   = min(0.80, (ambition / 20.0) - loyalty_resist * 0.5)
+                    leave_chance   = (min(0.80, (ambition / 20.0) - loyalty_resist * 0.5)
+                                      * age_inertia)
 
                     if random.random() < leave_chance:
                         reason = "poached" if prestige_gap >= 25 else "resigned"
@@ -321,6 +407,29 @@ def _evaluate_all_programs(all_programs, season_year, verbose):
                                   " -- " + coach.get("name", "?") +
                                   " -> " + best_job["name"] +
                                   " (gap +" + str(round(prestige_gap, 0)) + ")" + bo_str)
+                        continue
+
+        # GREED PATH: take a lateral move for a better salary
+        if (greed >= 15 and
+                security >= VOLUNTARY_DEPARTURE_MIN_SECURITY and
+                seasons >= 2):
+
+            salary_job = _find_better_paying_job(
+                program, all_programs, changes, claimed_destinations
+            )
+
+            if salary_job is not None:
+                greed_leave = (greed / 20.0) * 0.40 * age_inertia
+                if random.random() < greed_leave:
+                    claimed_destinations.add(salary_job["name"])
+                    changes.append(_build_change(
+                        program, "resigned", "greed",
+                        destination=salary_job["name"]
+                    ))
+                    if verbose:
+                        print("  RESIGNED ($$): " + program["name"] +
+                              " -- " + coach.get("name", "?") +
+                              " -> " + salary_job["name"] + " (salary)")
 
     return changes
 
@@ -365,6 +474,35 @@ def _find_best_available_job(current_program, all_programs, existing_changes,
     return candidates[-1]
 
 
+def _find_better_paying_job(current_program, all_programs, existing_changes,
+                             claimed_destinations):
+    """
+    Finds a job that pays meaningfully more than current program.
+    Used for greed-driven lateral/step-down moves.
+    Must pay at least 30% more than current budget to be worth leaving.
+    """
+    current_budget = get_effective_budget(current_program)
+    min_budget     = current_budget * 1.30
+
+    changing = {c["program_name"] for c in existing_changes}
+
+    candidates = []
+    for prog in all_programs:
+        if prog["name"] == current_program["name"]:  continue
+        if prog["name"] in changing:                 continue
+        if prog["name"] in claimed_destinations:     continue
+        prog_budget = get_effective_budget(prog)
+        if prog_budget >= min_budget:
+            candidates.append((prog, prog_budget))
+
+    if not candidates:
+        return None
+
+    # Weight by how much more it pays
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
+
+
 def _build_change(program, reason, trigger, destination=None, is_buyout=False):
     coach = program.get("coach", {})
     return {
@@ -396,28 +534,30 @@ def _update_coach_career_record(program):
 # PHASE 2: JOB MARKET
 # -----------------------------------------
 
-def _run_job_market(all_programs, changes, season_year, verbose):
+def _run_job_market(all_programs, changes, season_year, free_agent_pool, verbose):
     """
     Matches displaced coaches to open jobs.
-
-    Blue blood jobs (95+ prestige) get priority cascade treatment:
-      1. Full displaced pool evaluated first for that job
-      2. If no suitable match, AD approaches best currently-employed coach
-    All other jobs fill in prestige order after blue blood resolution.
-
-    Hot seat reputation affects which coaches are willing to sign.
+    Fired/unplaced coaches enter the free agent pool.
+    Salary floors and instability reputation filter the market.
     """
     from programs_data import get_conference_tier
 
     if not changes:
-        return all_programs, []
+        return all_programs, [], free_agent_pool
 
-    hire_log       = []
-    displaced_pool = [c["coach_obj"] for c in changes]
+    hire_log = []
+
+    # Build displaced pool: current changes + free agents
+    current_displaced = [c["coach_obj"] for c in changes
+                         if c["reason"] != "retirement"]
+    displaced_pool    = current_displaced + list(free_agent_pool)
+
+    # Track which coaches from free_agent_pool get placed
+    free_agent_ids = {c.get("coach_id") for c in free_agent_pool}
 
     # Separate blue blood openings from normal openings
-    open_jobs = [c["program"] for c in changes]
-    bb_jobs   = [p for p in open_jobs if p["prestige_current"] >= BLUE_BLOOD_CASCADE_THRESHOLD]
+    open_jobs   = [c["program"] for c in changes]
+    bb_jobs     = [p for p in open_jobs if p["prestige_current"] >= BLUE_BLOOD_CASCADE_THRESHOLD]
     normal_jobs = sorted(
         [p for p in open_jobs if p["prestige_current"] < BLUE_BLOOD_CASCADE_THRESHOLD],
         key=lambda p: p["prestige_current"],
@@ -425,6 +565,7 @@ def _run_job_market(all_programs, changes, season_year, verbose):
     )
 
     program_by_name = {p["name"]: p for p in all_programs}
+    placed_ids      = set()   # track coach_ids that got placed
 
     # --- BLUE BLOOD CASCADE HIRING ---
     for bb_program in bb_jobs:
@@ -442,7 +583,12 @@ def _run_job_market(all_programs, changes, season_year, verbose):
                                            bb_program["carousel_state"].get("ad_hiring_profile", "opportunist"),
                                            season_year)
             hire_type = "fresh"
+        else:
+            if new_coach.get("coach_id") in free_agent_ids:
+                placed_ids.add(new_coach.get("coach_id"))
 
+        _update_salary_on_hire(new_coach, bb_program)
+        record_job_change(new_coach)
         old_name = bb_program.get("coach_name", "Unknown")
         _install_coach(bb_program, new_coach, season_year)
 
@@ -462,14 +608,28 @@ def _run_job_market(all_programs, changes, season_year, verbose):
 
     # --- NORMAL JOB MARKET ---
     for program in normal_jobs:
-        hot_seat = get_hot_seat_reputation(program, season_year)
-        carousel  = program["carousel_state"]
-        ad_profile = carousel.get("ad_hiring_profile", "opportunist")
-        conf_tier  = get_conference_tier(program["conference"])["tier"]
+        hot_seat    = get_hot_seat_reputation(program, season_year)
+        carousel    = program["carousel_state"]
+        ad_profile  = carousel.get("ad_hiring_profile", "opportunist")
+        conf_tier   = get_conference_tier(program["conference"])["tier"]
         prestige_floor = _PRESTIGE_HIRE_FLOOR.get(conf_tier, 1)
         exp_floor      = _AD_EXPERIENCE_FLOOR.get(ad_profile, 0)
+        prog_budget    = get_effective_budget(program)
 
         eligible = [c for c in displaced_pool if c.get("experience", 0) >= exp_floor]
+
+        # Salary floor filter: coaches won't take below their floor
+        eligible = [c for c in eligible
+                    if prog_budget >= c.get("salary_floor", 0)]
+
+        # Instability reputation filter
+        eligible = [c for c in eligible
+                    if c.get("instability_reputation", 0) < INSTABILITY_TOXIC_THRESHOLD]
+        if hot_seat >= HOT_SEAT_CONCERN_THRESHOLD:
+            # Stable programs with hot seat issues also lose quality coaches who
+            # care about instability -- use a tighter instability filter
+            eligible = [c for c in eligible
+                        if c.get("instability_reputation", 0) < INSTABILITY_CONCERN_THRESHOLD]
 
         if ad_profile == "pedigree_seeker":
             eligible = [c for c in eligible
@@ -497,9 +657,8 @@ def _run_job_market(all_programs, changes, season_year, verbose):
                c.get("experience", 0) >= breakout_exp_floor
         ]
 
-        # Hot seat reputation filter: quality coaches pass on toxic programs
+        # Hot seat reputation filter
         if hot_seat >= HOT_SEAT_TOXIC_THRESHOLD:
-            # Only coaches with low loyalty AND low rebuild_tolerance will sign
             eligible = [c for c in eligible
                         if c.get("loyalty", 10) < 10 and
                            c.get("rebuild_tolerance", 10) < 10]
@@ -507,7 +666,6 @@ def _run_job_market(all_programs, changes, season_year, verbose):
                 print("  HOT SEAT WARNING: " + program["name"] +
                       " reputation=" + str(hot_seat) + " -- quality coaches avoiding")
         elif hot_seat >= HOT_SEAT_CONCERN_THRESHOLD:
-            # Coaches with high loyalty or rebuild_tolerance pass
             eligible = [c for c in eligible
                         if not (c.get("loyalty", 10) >= 14 or
                                 c.get("rebuild_tolerance", 10) >= 14)]
@@ -520,6 +678,8 @@ def _run_job_market(all_programs, changes, season_year, verbose):
                 new_coach = bc
                 displaced_pool.remove(bc)
                 hire_type = "recycled_breakout"
+                if bc.get("coach_id") in free_agent_ids:
+                    placed_ids.add(bc.get("coach_id"))
                 if verbose:
                     print("  BREAKOUT HIRE: " + program["name"] +
                           " pursues breakout coach " + bc.get("name", "?"))
@@ -531,12 +691,16 @@ def _run_job_market(all_programs, changes, season_year, verbose):
                     continue
                 new_coach = candidate
                 displaced_pool.remove(candidate)
+                if candidate.get("coach_id") in free_agent_ids:
+                    placed_ids.add(candidate.get("coach_id"))
                 break
 
         if new_coach is None:
             new_coach = _generate_new_hire(program, ad_profile, season_year)
             hire_type = "fresh"
 
+        _update_salary_on_hire(new_coach, program)
+        record_job_change(new_coach)
         old_name = program.get("coach_name", "Unknown")
         _install_coach(program, new_coach, season_year)
 
@@ -550,12 +714,51 @@ def _run_job_market(all_programs, changes, season_year, verbose):
 
         if verbose:
             rep_str = (" [hot_seat=" + str(hot_seat) + "]" if hot_seat >= 30 else "")
+            budget_str = (" [$" + _fmt_salary(prog_budget) + "]"
+                          if program.get("budget_spike", 0) > 0 else "")
             print("  HIRED (" + hire_type + "): " + program["name"] +
                   " -- " + new_coach["name"] +
                   " [" + new_coach["archetype"] + "]" +
-                  " (exp=" + str(new_coach.get("experience", 0)) + ")" + rep_str)
+                  " (exp=" + str(new_coach.get("experience", 0)) + ")" +
+                  rep_str + budget_str)
 
-    return all_programs, hire_log
+    # Unplaced coaches from current changes enter the free agent pool
+    placed_names = {h["new_coach"] for h in hire_log}
+    for change in changes:
+        if change["reason"] == "retirement":
+            continue
+        coach_obj = change["coach_obj"]
+        if (coach_obj.get("name") not in placed_names and
+                coach_obj.get("coach_id") not in placed_ids):
+            coach_obj["staff_role"]       = "free_agent"
+            coach_obj["free_agent_seasons"] = 0
+            free_agent_pool.append(coach_obj)
+
+    # Remove placed free agents from pool
+    free_agent_pool = [c for c in free_agent_pool
+                       if c.get("coach_id") not in placed_ids]
+
+    return all_programs, hire_log, free_agent_pool
+
+
+def _update_salary_on_hire(coach, program):
+    """Updates coach salary_current and adjusts salary_floor upward on hire."""
+    budget = get_effective_budget(program)
+    coach["salary_current"] = budget
+    # Floor rises to 70% of current salary -- won't take a big step down next time
+    coach["salary_floor"] = max(
+        coach.get("salary_floor", 0),
+        int(budget * 0.70)
+    )
+
+
+def _fmt_salary(amount):
+    """Formats salary as human-readable string."""
+    if amount >= 1_000_000:
+        return str(round(amount / 1_000_000, 1)) + "M"
+    if amount >= 1_000:
+        return str(round(amount / 1_000)) + "K"
+    return str(amount)
 
 
 def _hire_for_blue_blood(bb_program, displaced_pool, all_programs, changes, season_year, verbose):
@@ -698,6 +901,8 @@ def _generate_new_hire(program, ad_profile, season_year):
 
 
 def _install_coach(program, new_coach, season_year):
+    new_coach["staff_role"]   = "head_coach"
+    new_coach["free_agent_seasons"] = 0
     program["coach"]         = new_coach
     program["coach_name"]    = new_coach["name"]
     program["coach_seasons"] = 0

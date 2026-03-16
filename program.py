@@ -1,6 +1,6 @@
 import random
 from player import generate_team, get_team_ratings
-from coach import generate_coach, generate_staff
+from coach import generate_coach, generate_staff, calc_program_budget
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Program Database v0.6
@@ -211,6 +211,13 @@ def create_program(name, nickname, city, state, division, conference,
         "coach_seasons": 0,
         "coach":         coach,
         "coaching_staff": generate_staff(name, prestige_current),
+        # BASKETBALL BUDGET
+        # basketball_budget: annual HC salary budget (investment_appetite scaled)
+        # budget_spike: temporary booster injection (0 if none active)
+        # budget_spike_seasons_remaining: countdown for spike duration
+        "basketball_budget":              calc_program_budget(prestige_current, invest),
+        "budget_spike":                   0,
+        "budget_spike_seasons_remaining": 0,
         "investment_appetite":   invest,
         "prestige_sensitivity":  pres_sen,
         "community_pressure":    comm_p,
@@ -266,7 +273,62 @@ def ensure_carousel_state(program):
     return program
 
 
-def ensure_coaching_staff(program):
+def ensure_program_budget(program):
+    """Migration safety. Adds basketball_budget fields to existing programs."""
+    if "basketball_budget" not in program:
+        prestige   = program.get("prestige_current", 50)
+        appetite   = program.get("investment_appetite", 5)
+        program["basketball_budget"]              = calc_program_budget(prestige, appetite)
+        program["budget_spike"]                   = 0
+        program["budget_spike_seasons_remaining"] = 0
+    return program
+
+
+def get_effective_budget(program):
+    """Returns total available budget including any active booster spike."""
+    base  = program.get("basketball_budget", 200_000)
+    spike = program.get("budget_spike", 0)
+    return base + spike
+
+
+def tick_budget_spike(program):
+    """
+    Called each offseason. Decrements budget spike countdown.
+    When it expires the spike drops off naturally.
+    """
+    if program.get("budget_spike_seasons_remaining", 0) > 0:
+        program["budget_spike_seasons_remaining"] -= 1
+        if program["budget_spike_seasons_remaining"] <= 0:
+            program["budget_spike"]                   = 0
+            program["budget_spike_seasons_remaining"] = 0
+    return program
+
+
+def apply_booster_spike(program):
+    """
+    Small random chance each offseason of a booster injection.
+    More likely at programs with high investment_appetite.
+    The spike lasts 1-3 seasons then expires.
+    Called from coaching_carousel each offseason.
+    """
+    # Only applies if no spike already active
+    if program.get("budget_spike", 0) > 0:
+        return program
+
+    appetite = program.get("investment_appetite", 5)
+    # Base chance: 2% per season, scaled by appetite
+    spike_chance = 0.02 + (appetite / 10.0) * 0.04   # 2-6% per season
+
+    if random.random() < spike_chance:
+        base_budget = program.get("basketball_budget", 200_000)
+        # Spike adds 50-150% of base budget
+        spike_mult  = random.uniform(0.50, 1.50)
+        spike_amt   = int(base_budget * spike_mult)
+        duration    = random.randint(1, 3)
+        program["budget_spike"]                   = spike_amt
+        program["budget_spike_seasons_remaining"] = duration
+
+    return program
     """
     Migration safety. Adds coaching_staff to any existing program dict
     that was built before staff generation was added.

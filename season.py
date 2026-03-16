@@ -1177,7 +1177,7 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
 # WORLD SEASON
 # -----------------------------------------
 
-def simulate_world_season(all_programs, season_year, verbose=True):
+def simulate_world_season(all_programs, season_year, verbose=True, free_agent_pool=None):
     """
     Simulates a COMPLETE year for the entire world.
 
@@ -1195,6 +1195,9 @@ def simulate_world_season(all_programs, season_year, verbose=True):
     from roster_minutes import allocate_minutes
     from cohesion import update_cohesion
     from game_engine import initialize_season_stats, finalize_season_stats
+
+    if free_agent_pool is None:
+        free_agent_pool = []
 
     for program in all_programs:
         allocate_minutes(program)
@@ -1253,8 +1256,9 @@ def simulate_world_season(all_programs, season_year, verbose=True):
 
     # Step 4d: Coaching carousel
     # Runs BEFORE transfer portal -- coaching changes trigger portal wave entries
-    all_programs, carousel_report, carousel_portal_additions = run_coaching_carousel(
-        all_programs, season_year=season_year, verbose=verbose
+    all_programs, carousel_report, carousel_portal_additions, free_agent_pool = run_coaching_carousel(
+        all_programs, season_year=season_year,
+        free_agent_pool=free_agent_pool, verbose=verbose
     )
     if verbose:
         print_carousel_report(carousel_report)
@@ -1322,7 +1326,7 @@ def simulate_world_season(all_programs, season_year, verbose=True):
         extra_portal_players=carousel_portal_additions
     )
 
-    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report
+    return all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report, free_agent_pool
 
 
 # -----------------------------------------
@@ -1489,9 +1493,12 @@ if __name__ == "__main__":
     start_prestiges_global = {p["name"]: p["prestige_current"] for p in all_programs}
     start_prestiges        = {p["name"]: p["prestige_current"] for p in all_programs}
 
+    free_agent_pool = []
+
     for year in range(2024, 2030):
-        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report = simulate_world_season(
-            all_programs, season_year=year, verbose=True
+        all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report, free_agent_pool = simulate_world_season(
+            all_programs, season_year=year, verbose=True,
+            free_agent_pool=free_agent_pool
         )
         print_prestige_movers(all_programs, start_prestiges, year)
         print_blue_blood_throne(all_programs, year)
