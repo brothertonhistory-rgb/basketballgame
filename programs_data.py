@@ -71,53 +71,94 @@ def calc_prestige(tourney, ff, titles, conference):
     tier  = get_conference_tier(conference)["tier"]
     floor = get_conference_floor(conference)
 
-    # Tier-aware base score and tournament value.
-    # floor_conf programs start low -- ancient tournament appearances
-    # don't reflect current program strength in the SWAC/MEAC/NEC/WAC.
-    # low_major programs get a modest discount for the same reason.
+    # Each tier has its own formula calibrated so the starting world distribution
+    # matches universe targets (BB=4, elite=18, strong=45, avg=85, below=90, poor=88).
+    # Historical tournament data sets identity but is discounted for lower tiers --
+    # a SWAC program's 1980s appearances don't reflect current strength.
+
     if tier == "floor_conf":
+        # Target: spread across poor tier (1-20). Best programs ~15-18.
         score = 6
         if tourney <= 10:
-            score += tourney * 0.4
+            score += tourney * 0.5
         else:
-            score += 4 + (tourney - 10) * 0.2
+            score += 5 + (tourney - 10) * 0.2
         score += ff * 1.5
         title_bonus = [0, 5, 8, 10]
-        if titles < len(title_bonus):
-            score += title_bonus[titles]
-        else:
-            score += title_bonus[-1]
+        score += title_bonus[min(titles, len(title_bonus) - 1)]
         return max(floor, min(20, round(score)))
 
     elif tier == "low_major":
-        score = 8
+        # Target: spread across poor/below_average (15-30).
+        # Best programs (Holy Cross, Winthrop) should hit ~28-32.
+        score = 12
         if tourney <= 10:
-            score += tourney * 0.6
+            score += tourney * 1.0
         else:
-            score += 6 + (tourney - 10) * 0.3
-        score += ff * 2.0
+            score += 10 + (tourney - 10) * 0.4
+        score += ff * 3.0
         title_bonus = [0, 8, 12, 15]
-        if titles < len(title_bonus):
-            score += title_bonus[titles]
+        score += title_bonus[min(titles, len(title_bonus) - 1)]
+        return max(floor, min(35, round(score)))
+
+    elif tier == "mid_major":
+        # Target: spread across below_average/average (20-55).
+        # Programs with no history start at floor (~20).
+        # Active mid-majors (UTEP, Western Kentucky) reach 45-55.
+        score = 18
+        if tourney <= 10:
+            score += tourney * 1.5
+        elif tourney <= 20:
+            score += 15 + (tourney - 10) * 1.0
         else:
-            score += title_bonus[-1]
-        return max(floor, min(30, round(score)))
+            score += 25 + (tourney - 20) * 0.6
+        score += ff * 5.0
+        title_bonus = [0, 10, 16, 20, 23]
+        score += title_bonus[min(titles, len(title_bonus) - 1)]
+        return max(floor, min(62, round(score)))
+
+    elif tier == "high_major":
+        # Target: spread across average/strong (35-75).
+        # Programs with thin history start ~35-40.
+        # Gonzaga/Memphis/Temple tier should reach 55-72.
+        score = 32
+        if tourney <= 10:
+            score += tourney * 1.2
+        elif tourney <= 25:
+            score += 12 + (tourney - 10) * 1.0
+        else:
+            score += 27 + (tourney - 25) * 0.5
+        score += ff * 5.0
+        title_bonus = [0, 12, 18, 22, 25, 28]
+        score += title_bonus[min(titles, len(title_bonus) - 1)]
+        return max(floor, min(82, round(score)))
 
     else:
-        # mid_major, high_major, power -- unchanged
-        score = 10
+        # power -- ACC, Big Ten, Big 12, SEC, Big East
+        # Target: spread across average/strong/elite (45-97).
+        # Programs with thin history start near floor (45-50).
+        # Mid-tier power programs (Purdue, Houston, Syracuse) hit 55-72.
+        # Near-blue-bloods (UConn, Indiana, Villanova) hit 79-88.
+        # True blue bloods (Kentucky, UNC, UCLA, Kansas, Duke) hit 92-97.
+        #
+        # NOTE: Title bonus is halved vs historical weight. Programs like
+        # Indiana and Illinois have real titles but haven't been elite in
+        # decades -- tourney appearances + FF count reflects recency better.
+        # If you want to restore full title weight for accuracy, double
+        # title_bonus values below.
+        score = 22
         if tourney <= 10:
-            score += tourney * 0.8
-        elif tourney <= 25:
-            score += 8 + (tourney - 10) * 0.5
+            score += tourney * 1.0
+        elif tourney <= 30:
+            score += 10 + (tourney - 10) * 0.7
         else:
-            score += 15.5 + (tourney - 25) * 0.3
-        score += ff * 3.0
-        title_bonus = [0, 10, 17, 22, 26, 29, 31, 33, 35, 37, 39]
+            score += 24 + (tourney - 30) * 0.4
+        score += ff * 3.5
+        title_bonus = [0, 5, 9, 12, 14, 16, 17, 18, 19, 20, 21]
         if titles < len(title_bonus):
             score += title_bonus[titles]
         else:
-            score += title_bonus[-1] + (titles - len(title_bonus) + 1) * 2
+            score += title_bonus[-1] + (titles - len(title_bonus) + 1) * 1
         return max(floor, min(97, round(score)))
 
 

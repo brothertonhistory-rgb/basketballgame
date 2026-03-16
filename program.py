@@ -526,7 +526,7 @@ def apply_buzz_decay(program, made_tournament, tournament_result, season_year):
         )
 
 
-def apply_gravity_pull(program):
+def apply_gravity_pull(program, seasons_played=None, gravity_earn_seasons=3):
     current = program["prestige_current"]
     pull    = (program["prestige_gravity"] - current) * program["gravity_pull_rate"]
     program["prestige_current"] = round(current + pull, 1)

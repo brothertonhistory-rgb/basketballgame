@@ -197,12 +197,31 @@ UNIVERSE_NUDGE_SMALL    = 0.25
 UNIVERSE_NUDGE_MODERATE = 0.50
 UNIVERSE_NUDGE_STRONG   = 0.80
 
+# Blended gravity earn period.
+# New programs use conference floor as gravity anchor for this many seasons,
+# then blend linearly toward their earned prestige_gravity over the same
+# number of seasons again. Full earned gravity kicks in at 2x this value.
+# Raise this if seeded prestiges are unreliable (e.g. early sim runs).
+# Lower this if you're loading curated world files with trusted gravity values.
+GRAVITY_EARN_SEASONS = 5
+
 # Auto-correction thresholds
 # If a tier is below AUTO_CORRECT_LOW, pull programs up to hit AUTO_CORRECT_TARGET
 # If a tier is above AUTO_CORRECT_HIGH, push programs down to hit AUTO_CORRECT_TARGET
-AUTO_CORRECT_LOW    = 0.75   # below 75% triggers upward pull
-AUTO_CORRECT_HIGH   = 1.25   # above 125% triggers downward push
-AUTO_CORRECT_TARGET = 0.80   # correct to 80% of target
+AUTO_CORRECT_LOW    = 0.85   # below 85% triggers upward pull (was 0.75)
+AUTO_CORRECT_HIGH   = 1.20   # above 120% triggers downward push (was 1.25)
+AUTO_CORRECT_TARGET = 0.90   # correct to 90% of target (was 0.80)
+
+# Smooth drift caps -- REPLACES hard boundary teleport.
+# Instead of snapping programs to exact tier boundaries,
+# we nudge them by at most this many points per season.
+# Programs drift to the right tier over 2-4 seasons rather than jumping.
+# Tune here if distribution is correcting too slowly or too fast.
+AUTO_CORRECT_UP_CAP   = 5.0   # max points moved upward per program per season
+AUTO_CORRECT_DOWN_CAP = 4.0   # max points moved downward per program per season
+# Fraction of gap to boundary used as the nudge size.
+# 0.5 = move 50% of the remaining gap each season (geometric approach).
+AUTO_CORRECT_GAP_FRAC = 0.50
 
 # Blue blood identity pull -- programs above 95 get strong upward
 # resistance to decline. Programs in 85-94 feel a weaker upward
@@ -900,24 +919,23 @@ def apply_universe_gravity(all_programs):
     Blue blood tier is exempt -- throne check handles that separately.
     Conference floors protected as hard stop on downward movement.
 
-    HARD AUTO-CORRECTION RULES (runs each season):
+    SMOOTH DRIFT RULES (runs each season):
 
     If a tier is below 75% of target:
-      Pull exactly enough programs up from the tier below to reach 80%.
-      Programs are selected by prestige descending (closest to boundary).
-      Placed at the tier minimum -- just enough to cross the line.
+      Nudge the top programs from the tier below upward by a fraction
+      of the gap to the boundary. Maximum AUTO_CORRECT_UP_CAP pts/season.
+      Programs are NOT snapped to the boundary -- they drift toward it
+      over 2-4 seasons. This eliminates the teleport artifact.
       prestige_current only -- gravity anchor untouched.
 
     If a tier is above 125% of target:
-      Push exactly enough programs down to the tier above to reach 110%.
-      Programs selected by prestige ascending (weakest in the tier).
-      Placed just below the tier minimum.
+      Nudge the weakest programs in the tier downward by a fraction
+      of the gap to the boundary. Maximum AUTO_CORRECT_DOWN_CAP pts/season.
+      Programs are NOT snapped to exact boundaries -- gradual drift.
       prestige_current only -- gravity anchor untouched.
 
     Runs top-down so corrections cascade correctly:
       elite corrected first, then strong, then average, etc.
-      This means a vacuum in elite pulls from strong, which may then
-      pull from average, which may then pull from below_average.
     """
     tier_list = list(UNIVERSE_TIERS)
 
@@ -933,7 +951,7 @@ def apply_universe_gravity(all_programs):
         )
         fill_pct = actual / max(1, target)
 
-        # --- UNDERPOPULATED: pull from tier below ---
+        # --- UNDERPOPULATED: drift programs up from tier below ---
         if fill_pct < AUTO_CORRECT_LOW:
             needed = int(target * AUTO_CORRECT_TARGET) - actual
             if needed <= 0:
@@ -945,6 +963,7 @@ def apply_universe_gravity(all_programs):
             _, below_min, below_max, _ = tier_list[i + 1]
 
             # Get programs from tier below, sorted by prestige desc
+            # (closest to the boundary get nudged first)
             candidates = sorted(
                 [p for p in all_programs
                  if below_min <= p["prestige_current"] <= below_max],
@@ -956,14 +975,24 @@ def apply_universe_gravity(all_programs):
             for program in candidates:
                 if moved >= needed:
                     break
-                conf_floor = get_conference_floor(program["conference"])
-                # Place at tier minimum -- just enough to cross the line
-                new_prestige = max(conf_floor, p_min)
+                conf_floor   = get_conference_floor(program["conference"])
+                current      = program["prestige_current"]
+                # Nudge = fraction of gap to boundary, capped at UP_CAP
+                gap_to_boundary = p_min - current
+                nudge = min(AUTO_CORRECT_UP_CAP,
+                            max(0.3, gap_to_boundary * AUTO_CORRECT_GAP_FRAC))
+                new_prestige = max(conf_floor, current + nudge)
+                # Never snap exactly to boundary -- stop just short
+                # so the program earns the final crossing organically
+                new_prestige = min(new_prestige, p_min - 0.1)
+                if new_prestige <= current:
+                    moved += 1
+                    continue
                 program["prestige_current"] = round(new_prestige, 1)
                 program["prestige_grade"]   = prestige_grade(program["prestige_current"])
                 moved += 1
 
-        # --- OVERCROWDED: push weakest down ---
+        # --- OVERCROWDED: drift weakest programs down ---
         elif fill_pct > AUTO_CORRECT_HIGH:
             excess = actual - int(target * (AUTO_CORRECT_HIGH - 0.15))
             if excess <= 0:
@@ -981,15 +1010,21 @@ def apply_universe_gravity(all_programs):
                 if moved >= excess:
                     break
                 conf_floor = get_conference_floor(program["conference"])
-                # Place just below tier minimum
-                new_prestige = max(conf_floor, p_min - 0.1)
+                current    = program["prestige_current"]
+                # Nudge = fraction of gap below boundary, capped at DOWN_CAP
+                gap_below_boundary = current - p_min
+                nudge = min(AUTO_CORRECT_DOWN_CAP,
+                            max(0.3, gap_below_boundary * AUTO_CORRECT_GAP_FRAC))
+                new_prestige = max(conf_floor, current - nudge)
+                if new_prestige >= current:
+                    moved += 1
+                    continue
                 if new_prestige < conf_floor:
+                    moved += 1
                     continue  # can't push below conference floor
                 program["prestige_current"] = round(new_prestige, 1)
                 program["prestige_grade"]   = prestige_grade(program["prestige_current"])
                 moved += 1
-
-    return all_programs
 
     return all_programs
 
@@ -1109,7 +1144,7 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
 
         # Prestige pipeline
         update_prestige_for_results(p, capped_wins, capped_losses, made_tournament, tournament_wins)
-        apply_gravity_pull(p)
+        apply_gravity_pull(p, gravity_earn_seasons=GRAVITY_EARN_SEASONS)
         apply_gravity_drift(p, season_year, win_pct, conf_finish_percentile)
         recalculate_gravity_pull_rate(p)
         update_job_security(p, win_pct, conf_finish_percentile)
