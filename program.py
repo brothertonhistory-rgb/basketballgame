@@ -1,6 +1,6 @@
 import random
 from player import generate_team, get_team_ratings
-from coach import generate_coach
+from coach import generate_coach, generate_staff
 
 # -----------------------------------------
 # COLLEGE HOOPS SIM -- Program Database v0.6
@@ -210,6 +210,7 @@ def create_program(name, nickname, city, state, division, conference,
         "coach_name":    coach_name,
         "coach_seasons": 0,
         "coach":         coach,
+        "coaching_staff": generate_staff(name, prestige_current),
         "investment_appetite":   invest,
         "prestige_sensitivity":  pres_sen,
         "community_pressure":    comm_p,
@@ -262,6 +263,31 @@ def ensure_carousel_state(program):
         if key not in program["carousel_state"]:
             program["carousel_state"][key] = val
 
+    return program
+
+
+def ensure_coaching_staff(program):
+    """
+    Migration safety. Adds coaching_staff to any existing program dict
+    that was built before staff generation was added.
+    Safe to call every season -- no-ops if staff already exists.
+    """
+    if "coaching_staff" not in program or not program["coaching_staff"]:
+        program["coaching_staff"] = generate_staff(
+            program["name"],
+            program.get("prestige_current", 50)
+        )
+    # Ensure all staff members have age and new fields
+    for member in program["coaching_staff"]:
+        if "age" not in member:
+            exp = member.get("experience", 5)
+            member["age"] = max(22, min(72, 22 + exp + random.randint(0, 6)))
+        if "staff_role" not in member:
+            member["staff_role"] = "assistant"
+        if "seasons_on_staff" not in member:
+            member["seasons_on_staff"] = 0
+        if "free_agent_seasons" not in member:
+            member["free_agent_seasons"] = 0
     return program
 
 
@@ -526,7 +552,7 @@ def apply_buzz_decay(program, made_tournament, tournament_result, season_year):
         )
 
 
-def apply_gravity_pull(program, seasons_played=None, gravity_earn_seasons=3):
+def apply_gravity_pull(program):
     current = program["prestige_current"]
     pull    = (program["prestige_gravity"] - current) * program["gravity_pull_rate"]
     program["prestige_current"] = round(current + pull, 1)

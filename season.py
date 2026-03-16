@@ -1144,7 +1144,7 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
 
         # Prestige pipeline
         update_prestige_for_results(p, capped_wins, capped_losses, made_tournament, tournament_wins)
-        apply_gravity_pull(p, gravity_earn_seasons=GRAVITY_EARN_SEASONS)
+        apply_gravity_pull(p)
         apply_gravity_drift(p, season_year, win_pct, conf_finish_percentile)
         recalculate_gravity_pull_rate(p)
         update_job_security(p, win_pct, conf_finish_percentile)

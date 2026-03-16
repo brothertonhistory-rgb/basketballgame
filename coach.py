@@ -295,10 +295,11 @@ def _calc_contract_years(prestige, board_patience=5):
 
 
 def generate_coach(name, prestige=50, archetype=None, experience=None,
-                   board_patience=5):
+                   board_patience=5, age=None):
     """
     Generates a full coach object.
     board_patience: passed from program carousel_state to calculate contract length.
+    age: if None, derived from experience. Pass explicitly for precise control.
     """
     if archetype is None:
         archetype = _pick_archetype()
@@ -306,6 +307,12 @@ def generate_coach(name, prestige=50, archetype=None, experience=None,
 
     if experience is None:
         experience = random.randint(0, 25)
+
+    # Age derived from experience if not provided.
+    # A coach with 20 years experience is realistically in their early-to-mid 40s.
+    # Small random spread reflects that some coaches start young, some start late.
+    if age is None:
+        age = max(24, min(78, 22 + experience + random.randint(0, 6)))
 
     philosophy = {
         "pace":           _slider(t["pace"]),
@@ -354,7 +361,13 @@ def generate_coach(name, prestige=50, archetype=None, experience=None,
         "name":       name,
         "archetype":  archetype,
         "experience": experience,
+        "age":        age,
         "legacy":     0,
+        # STAFF ROLE -- set by generate_staff(), overwritten on hire
+        # "head_coach" | "assistant" | "grad_assistant" | "free_agent"
+        "staff_role":         "head_coach",
+        "seasons_on_staff":   0,       # seasons at current program in any role
+        "free_agent_seasons": 0,       # seasons in free agent pool without a job
         # GEOGRAPHY
         "home_region": home_region,
         "alma_mater":  alma_mater,
@@ -414,6 +427,59 @@ def generate_coach(name, prestige=50, archetype=None, experience=None,
     }
 
     return coach
+
+
+def generate_staff(program_name, program_prestige=50):
+    """
+    Generates a coaching staff of 3 assistants + 1 grad assistant.
+    Every staff member has the full coach schema -- same visible ratings
+    as head coaches. staff_role distinguishes their position.
+
+    Assistants:
+      - Experience 2-15 years (weighted toward lower end)
+      - Age derived from experience
+      - Prestige used for competence scaling is reduced (they haven't run
+        a program yet, so their competence reflects that ceiling)
+      - Ambition drives whether they pursue head coaching jobs
+
+    Grad assistant:
+      - Age 22-27 explicitly
+      - Experience 0-2 years
+      - Entry-level competence
+      - The pipeline's starting point
+
+    Returns a list of 4 coach dicts.
+    """
+    from names import generate_coach_name
+
+    staff = []
+
+    # --- 3 ASSISTANTS ---
+    for _ in range(3):
+        exp         = random.randint(2, 15)
+        # Competence scales with program prestige but capped lower than HC
+        # An assistant at Kentucky is better than one at Lamar, but neither
+        # is as polished as a head coach yet
+        asst_prestige = max(20, min(75, program_prestige - random.randint(15, 30)))
+        age         = max(25, min(65, 22 + exp + random.randint(0, 8)))
+        name        = generate_coach_name()
+        coach       = generate_coach(name, prestige=asst_prestige,
+                                     experience=exp, age=age)
+        coach["staff_role"]       = "assistant"
+        coach["seasons_on_staff"] = random.randint(0, min(exp, 5))
+        staff.append(coach)
+
+    # --- 1 GRAD ASSISTANT ---
+    ga_age  = random.randint(22, 27)
+    ga_exp  = random.randint(0, 2)
+    ga_name = generate_coach_name()
+    ga      = generate_coach(ga_name, prestige=max(15, program_prestige - 40),
+                              experience=ga_exp, age=ga_age)
+    ga["staff_role"]       = "grad_assistant"
+    ga["seasons_on_staff"] = random.randint(0, ga_exp)
+    staff.append(ga)
+
+    return staff
 
 
 def seed_legacy_coach(coach, prestige):
@@ -522,7 +588,7 @@ def is_breakout_candidate(coach, program_gravity=50):
 
 
 def ensure_coach_carousel_attrs(coach):
-    """Migration safety. Adds all v0.5-v0.7 carousel attributes if missing."""
+    """Migration safety. Adds all v0.5-v0.8 carousel attributes if missing."""
     if "coach_id"           not in coach: coach["coach_id"]           = _next_coach_id()
     if "home_region"        not in coach: coach["home_region"]        = _pick_home_region()
     if "alma_mater"         not in coach: coach["alma_mater"]         = _pick_alma_mater(coach["home_region"])
@@ -536,6 +602,12 @@ def ensure_coach_carousel_attrs(coach):
     if "breakout_candidate"     not in coach: coach["breakout_candidate"]     = False
     if "ncaa_wins_history"      not in coach: coach["ncaa_wins_history"]      = []
     if "conf_finish_history"    not in coach: coach["conf_finish_history"]    = []
+    if "age"                not in coach:
+        exp = coach.get("experience", 10)
+        coach["age"] = max(24, min(78, 22 + exp + random.randint(0, 6)))
+    if "staff_role"         not in coach: coach["staff_role"]         = "head_coach"
+    if "seasons_on_staff"   not in coach: coach["seasons_on_staff"]   = 0
+    if "free_agent_seasons" not in coach: coach["free_agent_seasons"] = 0
     return coach
 
 
