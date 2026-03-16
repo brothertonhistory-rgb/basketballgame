@@ -151,9 +151,12 @@ def _init_carousel_state(prestige):
         "stale_meter":     0,
         "coaching_capital": 0.0,
         "ad_hiring_profile": "opportunist",
-        "first_championship": False,   # has this program ever won a title
-        "firing_reason":   None,       # last reason a coach was fired (for reporting)
+        "first_championship": False,
+        "firing_reason":   None,
         "last_hire_year":  None,
+        # v0.7: buyout reputation
+        "buyout_history":      [],   # list of season years of early firings
+        "hot_seat_reputation": 0,    # 0=clean, 100=toxic
     }
 
 
@@ -173,8 +176,6 @@ def create_program(name, nickname, city, state, division, conference,
                    prestige_gravity, coach_name, coach_archetype=None):
 
     roster_data = generate_team(name, prestige=prestige_current)
-    coach       = generate_coach(coach_name, prestige=prestige_current,
-                                 archetype=coach_archetype)
 
     invest   = random.randint(1, 10)
     pres_sen = random.randint(1, 10)
@@ -184,6 +185,10 @@ def create_program(name, nickname, city, state, division, conference,
     board_patience = _derive_board_patience(
         invest, pres_sen, comm_p, lead_s, prestige_current
     )
+
+    coach = generate_coach(coach_name, prestige=prestige_current,
+                           archetype=coach_archetype,
+                           board_patience=board_patience)
 
     carousel = _init_carousel_state(prestige_current)
     carousel["board_patience"]   = board_patience
@@ -263,8 +268,6 @@ def ensure_carousel_state(program):
 def get_firing_threshold(program):
     """
     Returns the job_security level at which this program fires a coach.
-    Base is 25. High board_patience programs fire at lower security levels
-    (more impatient = pull trigger earlier at higher security numbers).
 
     board_patience 1-3:  threshold 20 (patient board, hard to fire)
     board_patience 4-6:  threshold 25 (default)
@@ -278,6 +281,60 @@ def get_firing_threshold(program):
     if patience >= 7:   return 32
     if patience >= 4:   return 25
     return 20
+
+
+def record_buyout(program, season_year):
+    """
+    Records an early contract firing (buyout) on the program.
+    Updates hot_seat_reputation based on recency and count of buyouts.
+
+    Called by coaching_carousel.py when a coach is fired before
+    their contract_years_remaining reaches 0.
+
+    hot_seat_reputation decays naturally -- a firing 6+ seasons ago
+    barely registers. Recent firings hit hard.
+    """
+    ensure_carousel_state(program)
+    carousel = program["carousel_state"]
+
+    history = carousel.get("buyout_history", [])
+    history.append(season_year)
+    carousel["buyout_history"] = history
+
+    # Recalculate hot_seat_reputation
+    carousel["hot_seat_reputation"] = _calc_hot_seat_reputation(history, season_year)
+
+
+def _calc_hot_seat_reputation(buyout_history, current_year):
+    """
+    Calculates hot_seat_reputation (0-100) from buyout history.
+
+    Recent buyouts hurt much more than old ones.
+    Recency weights:
+      0-2 seasons ago: 35 points each
+      3-4 seasons ago: 20 points each
+      5-6 seasons ago: 10 points each
+      7+ seasons ago:  2 points each (institutional memory fades)
+    Cap at 100.
+    """
+    total = 0
+    for year in buyout_history:
+        age = current_year - year
+        if age <= 2:   total += 35
+        elif age <= 4: total += 20
+        elif age <= 6: total += 10
+        else:          total += 2
+    return min(100, total)
+
+
+def get_hot_seat_reputation(program, current_year):
+    """Returns current hot_seat_reputation, recalculated for current year."""
+    ensure_carousel_state(program)
+    carousel = program["carousel_state"]
+    history  = carousel.get("buyout_history", [])
+    rep      = _calc_hot_seat_reputation(history, current_year)
+    carousel["hot_seat_reputation"] = rep
+    return rep
 
 
 def update_stale_meter(program, conf_finish_percentile, made_tournament):

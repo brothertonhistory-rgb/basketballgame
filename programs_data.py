@@ -505,7 +505,7 @@ ALL_D1_PROGRAMS = [
 
 def build_all_d1_programs():
     from program import create_program
-    from coach import ARCHETYPE_WEIGHTS
+    from coach import ARCHETYPE_WEIGHTS, seed_legacy_coach
 
     archetypes = list(ARCHETYPE_WEIGHTS.keys())
     weights    = list(ARCHETYPE_WEIGHTS.values())
@@ -530,6 +530,16 @@ def build_all_d1_programs():
             coach_name=get_coach_name(data["name"]),
             coach_archetype=archetype,
         )
+
+        # v0.7: seed legacy history for established programs (75+ prestige)
+        # Gives them institutional memory -- contract protection, career history,
+        # some tournament credibility. Without this, a blue blood coach starts
+        # the sim with 0 career wins and gets fired in year 2 like a rookie.
+        if prestige >= 75:
+            seed_legacy_coach(p["coach"], prestige)
+            # Update coach_seasons on the program to match seeded history
+            p["coach_seasons"] = p["coach"]["seasons_at_program"]
+
         programs.append(p)
     return programs
 
