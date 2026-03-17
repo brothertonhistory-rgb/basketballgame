@@ -548,6 +548,36 @@ def build_all_d1_programs():
             coach_experience=exp,
         )
 
+        # Stamp coordinates from schools_database for geographic calculations
+        # (tournament site selection, recruiting distance, travel fatigue)
+        try:
+            from schools_database import SCHOOLS_DATABASE
+            school = next(
+                (s for s in SCHOOLS_DATABASE.values()
+                 if s["name"].lower() == data["name"].lower()
+                 and s["division"] == "D1"),
+                None
+            )
+            # Fallback: match by city if name doesn't match exactly
+            if not school:
+                school = next(
+                    (s for s in SCHOOLS_DATABASE.values()
+                     if s["city"].lower() == data["city"].lower()
+                     and s["state"].lower() == data["state"].lower()
+                     and s["division"] == "D1"),
+                    None
+                )
+            if school:
+                p["latitude"]  = school["latitude"]
+                p["longitude"] = school["longitude"]
+            else:
+                # Hard fallback: center of US — logs a warning
+                p["latitude"]  = 39.5
+                p["longitude"] = -98.5
+        except Exception:
+            p["latitude"]  = 39.5
+            p["longitude"] = -98.5
+
         # v0.7: seed legacy history for established programs (75+ prestige)
         if prestige >= 75:
             seed_legacy_coach(p["coach"], prestige)

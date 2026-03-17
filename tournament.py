@@ -37,6 +37,7 @@
 import random
 from game_engine import simulate_game
 from program import prestige_grade, apply_tournament_buzz, ensure_tournament_buzz
+from tournament_sites import draw_tournament_sites, name_regionals, assign_seed_to_site
 
 # -----------------------------------------
 # CONFIGURATION
@@ -45,7 +46,9 @@ from program import prestige_grade, apply_tournament_buzz, ensure_tournament_buz
 TOURNAMENT_FIELD_SIZE = 64
 NUM_AUTO_BIDS         = 31
 NUM_AT_LARGE          = TOURNAMENT_FIELD_SIZE - NUM_AUTO_BIDS
-REGIONS               = ["East", "West", "South", "Midwest"]
+# REGIONS is set dynamically each year by draw_and_name_tournament_sites().
+# Default fallback only — overridden before any tournament runs.
+REGIONS = ["East", "West", "South", "Midwest"]
 
 TIER_WEIGHT = {
     "power":      1.4,
@@ -57,6 +60,152 @@ TIER_WEIGHT = {
 
 SEPARATION_HARD = 4
 SEPARATION_SOFT = 8
+
+# Holds this year's tournament geography — set by draw_and_name_tournament_sites()
+_TOURNAMENT_DRAW = None
+
+
+# -----------------------------------------
+# TOURNAMENT GEOGRAPHY
+# -----------------------------------------
+
+def draw_and_name_tournament_sites(exclude_recent_cities=None):
+    """
+    Run the pre-season site draw.
+    Sets the global REGIONS list to this year's dynamic directional names.
+    Stores the full draw in _TOURNAMENT_DRAW for site assignment.
+    Call once before simulate_ncaa_tournament() each season.
+    """
+    global REGIONS, _TOURNAMENT_DRAW
+
+    draw = draw_tournament_sites(exclude_recent_cities=exclude_recent_cities)
+    named_regionals = name_regionals(draw['sweet16_elite8'])
+    draw['sweet16_elite8'] = named_regionals
+
+    # Update REGIONS to this year's dynamic names
+    REGIONS = [s['regional_name'] for s in named_regionals]
+    _TOURNAMENT_DRAW = draw
+
+    return draw
+
+
+def tag_overall_one_seed(seeded_field):
+    """
+    After seeding is assigned, find the #1 overall seed —
+    the best team among the four 1-seeds by selection score.
+    Tags them with overall_one_seed=True on their ncaa_tournament_result.
+    """
+    one_seeds = [e for e in seeded_field if e['seed'] == 1]
+    if not one_seeds:
+        return
+    best = max(one_seeds, key=lambda e: _selection_score(e['program']))
+    best['program']['ncaa_tournament_result']['overall_one_seed'] = True
+
+
+def assign_first_round_sites(seeded_field):
+    """
+    Assign opening weekend sites using the S-curve pick order.
+
+    Teams ranked 1-8 on the S-curve pick their opening weekend site
+    in order, each choosing the closest available site from the pool.
+    S-curve ranks 1-4 are the four 1 seeds (they pick pod A sites).
+    S-curve ranks 5-8 are the four 2 seeds (they pick pod B sites).
+    Everyone else slots into their regional pod automatically.
+
+    Pod A (1-seed side): seeds 1, 4, 5, 8, 9, 12, 13, 16
+    Pod B (2-seed side): seeds 2, 3, 6, 7, 10, 11, 14, 15
+    """
+    if not _TOURNAMENT_DRAW:
+        return
+
+    from tournament_sites import haversine
+
+    all_first_sites = list(_TOURNAMENT_DRAW['first_second'])
+    regional_sites  = {s['regional_name']: s for s in _TOURNAMENT_DRAW['sweet16_elite8']}
+
+    pod_a_seeds = {1, 4, 5, 8, 9, 12, 13, 16}
+    pod_b_seeds = {2, 3, 6, 7, 10, 11, 14, 15}
+
+    # Group entries by region
+    by_region = {r: [] for r in REGIONS}
+    for entry in seeded_field:
+        r = entry.get('region')
+        if r in by_region:
+            by_region[r].append(entry)
+
+    # --- S-CURVE SITE SELECTION: ranks 1-8 pick in order ---
+    # Ranks 1-4 (1 seeds) pick pod A sites
+    # Ranks 5-8 (2 seeds) pick pod B sites
+    top_8 = sorted(
+        [e for e in seeded_field if e.get('s_curve_rank', 99) <= 8],
+        key=lambda e: e.get('s_curve_rank', 99)
+    )
+
+    available_sites = list(all_first_sites)
+    pod_a_site = {}  # region_name -> site
+    pod_b_site = {}  # region_name -> site
+
+    for entry in top_8:
+        if not available_sites:
+            break
+        prog   = entry['program']
+        lat    = prog.get('latitude', 39.5)
+        lon    = prog.get('longitude', -98.5)
+        city   = prog.get('city', '')
+        region = entry['region']
+        rank   = entry.get('s_curve_rank', 99)
+
+        # Home city advantage — if campus city matches a site, take it
+        home_match = next(
+            (s for s in available_sites if s['city'].lower() == city.lower()),
+            None
+        )
+        if home_match:
+            best = home_match
+        else:
+            best = min(available_sites,
+                       key=lambda s: haversine(lat, lon, s['latitude'], s['longitude']))
+
+        available_sites.remove(best)
+
+        if rank <= 4:
+            pod_a_site[region] = best   # 1 seed picks pod A site
+        else:
+            pod_b_site[region] = best   # 2 seed picks pod B site
+
+    # --- ASSIGN EVERY TEAM TO THEIR SITE ---
+    for region_name, entries in by_region.items():
+        site_a = pod_a_site.get(region_name)
+        site_b = pod_b_site.get(region_name)
+
+        # Fallback for edge cases
+        if not site_a and available_sites:
+            site_a = available_sites.pop(0)
+        if not site_b and available_sites:
+            site_b = available_sites.pop(0)
+        if not site_b:
+            site_b = site_a
+
+        for entry in entries:
+            seed    = entry['seed']
+            program = entry['program']
+            site    = site_a if seed in pod_a_seeds else site_b
+            program['ncaa_tournament_result']['first_round_site']      = site
+            program['ncaa_tournament_result']['first_round_site_city'] = site['city'] if site else ''
+
+        # Regional site
+        reg_site = regional_sites.get(region_name)
+        if reg_site:
+            for entry in entries:
+                entry['program']['ncaa_tournament_result']['regional_site']      = reg_site
+                entry['program']['ncaa_tournament_result']['regional_site_city'] = reg_site['city']
+
+    # Final Four site
+    ff_site = _TOURNAMENT_DRAW.get('final_four')
+    if ff_site:
+        for entry in seeded_field:
+            entry['program']['ncaa_tournament_result']['final_four_site']      = ff_site
+            entry['program']['ncaa_tournament_result']['final_four_site_city'] = ff_site['city']
 
 
 # -----------------------------------------
@@ -138,6 +287,26 @@ def _assign_seeds_and_regions(field):
 
     for group in seed_groups:
         _assign_group_with_separation(group, region_conf_map, region_slots, conf_bid_counts)
+
+    # --- S-CURVE RANKING ---
+    # After seeds and regions are assigned, stamp each entry with its
+    # S-curve rank (1-64). This determines site selection order:
+    # ranks 1-8 pick opening weekend sites in order, closest available.
+    #
+    # S-curve order within each seed group (4 teams):
+    #   Seed 1: ranks 1,2,3,4     (best to worst 1 seed)
+    #   Seed 2: ranks 5,6,7,8     (best to worst 2 seed)
+    #   Seed 3: ranks 9,10,11,12  etc.
+    #
+    # Within each seed group, teams are ranked by selection score.
+    s_curve_rank = 0
+    for s in range(16):
+        group = seed_groups[s]
+        # Sort group by selection score descending to get intra-group ranking
+        group_sorted = sorted(group, key=lambda e: _selection_score(e['program']), reverse=True)
+        for entry in group_sorted:
+            s_curve_rank += 1
+            entry['s_curve_rank'] = s_curve_rank
 
     result = []
     for region in REGIONS:
@@ -354,20 +523,50 @@ def _apply_buzz_for_result(program, result, season_year):
 # MAIN TOURNAMENT RUNNER
 # -----------------------------------------
 
-def simulate_ncaa_tournament(all_programs, auto_bids, season_year=2024, verbose=True):
+def simulate_ncaa_tournament(all_programs, auto_bids, season_year=2024,
+                              verbose=True, exclude_recent_tournament_cities=None):
     from season import calculate_net_score
 
+    # --- Pre-season tournament geography draw ---
+    # Sets REGIONS dynamically and stores site assignments.
+    # Pass exclude_recent_tournament_cities from season.py to avoid repeats.
+    draw_and_name_tournament_sites(
+        exclude_recent_cities=exclude_recent_tournament_cities
+    )
+
+    if verbose:
+        print("")
+        print("  Tournament Sites:")
+        print("    Final Four:  " + _TOURNAMENT_DRAW['final_four']['city'] + ", " +
+              _TOURNAMENT_DRAW['final_four']['state'] +
+              " -- " + _TOURNAMENT_DRAW['final_four']['arena'])
+        for s in _TOURNAMENT_DRAW['sweet16_elite8']:
+            print("    [" + s['regional_name'] + " Regional]  " +
+                  s['city'] + ", " + s['state'] + " -- " + s['arena'])
+        print("    Opening Weekend:")
+        for s in _TOURNAMENT_DRAW['first_second']:
+            print("      " + s['city'] + ", " + s['state'] +
+                  " -- " + s['arena'] + " (" + str(s['capacity']) + ")")
+
     # Stamp NET scores on every program before selection runs.
-    # _selection_score() reads program["_net_score"] for ranking.
-    # Cleaned up after the tournament completes.
     for p in all_programs:
         p["_net_score"] = calculate_net_score(p, all_programs)
 
     for p in all_programs:
         ensure_tournament_buzz(p)
         p["ncaa_tournament_result"] = {
-            "seed": None, "region": None,
-            "result": "none", "wins": 0, "at_large": False,
+            "seed":                  None,
+            "region":                None,
+            "result":                "none",
+            "wins":                  0,
+            "at_large":              False,
+            "overall_one_seed":      False,
+            "first_round_site":      None,
+            "first_round_site_city": None,
+            "regional_site":         None,
+            "regional_site_city":    None,
+            "final_four_site":       None,
+            "final_four_site_city":  None,
         }
 
     field        = select_field(all_programs, auto_bids)
@@ -379,6 +578,12 @@ def simulate_ncaa_tournament(all_programs, auto_bids, season_year=2024, verbose=
         p["ncaa_tournament_result"]["region"]   = entry["region"]
         p["ncaa_tournament_result"]["at_large"] = entry["at_large"]
 
+    # Tag overall #1 seed
+    tag_overall_one_seed(seeded_field)
+
+    # Assign geographic sites to every team
+    assign_first_round_sites(seeded_field)
+
     region_groups = {r: [] for r in REGIONS}
     for entry in seeded_field:
         region_groups[entry["region"]].append(entry)
@@ -387,6 +592,72 @@ def simulate_ncaa_tournament(all_programs, auto_bids, season_year=2024, verbose=
         print("")
         print("--- NCAA Tournament ---")
         print("  Field: " + str(len(seeded_field)) + " teams")
+
+        # Print S-curve top 8 — these are the teams that pick sites
+        top_8 = sorted(
+            [e for e in seeded_field if e.get('s_curve_rank', 99) <= 8],
+            key=lambda e: e['s_curve_rank']
+        )
+        print("")
+        print("  S-Curve Top 8 (site selection order):")
+        for e in top_8:
+            overall = " << OVERALL #1" if e['program']['ncaa_tournament_result'].get('overall_one_seed') else ""
+            print("    #{rank}  ({seed} seed, {region})  {name}{overall}".format(
+                rank=e['s_curve_rank'],
+                seed=e['seed'],
+                region=e['region'],
+                name=e['program']['name'],
+                overall=overall,
+            ))
+
+        # --- Opening Weekend Site Breakdown ---
+        # Group all teams by their first round site city
+        site_groups = {}
+        for entry in seeded_field:
+            r = entry["program"]["ncaa_tournament_result"]
+            site_city = r.get("first_round_site_city") or "Unknown"
+            site_obj  = r.get("first_round_site") or {}
+            arena     = site_obj.get("arena", "")
+            state     = site_obj.get("state", "")
+            key       = site_city
+            if key not in site_groups:
+                site_groups[key] = {
+                    "arena": arena,
+                    "state": state,
+                    "region": entry["region"],
+                    "teams": []
+                }
+            site_groups[key]["teams"].append(entry)
+
+        print("")
+        print("  -- Opening Weekend Sites --")
+        for city, info in sorted(site_groups.items(),
+                                  key=lambda x: x[1]["region"]):
+            teams = sorted(info["teams"], key=lambda e: e["seed"])
+            print("")
+            print("  [{region}]  {city}, {state}  --  {arena}".format(
+                region=info["region"],
+                city=city,
+                state=info["state"],
+                arena=info["arena"],
+            ))
+            # Print matchups: 1v16, 8v9, etc in pairs
+            seed_map = {e["seed"]: e for e in teams}
+            matchup_order = [(1,16),(8,9),(5,12),(4,13),(6,11),(3,14),(7,10),(2,15)]
+            for hi, lo in matchup_order:
+                if hi in seed_map and lo in seed_map:
+                    hi_e = seed_map[hi]
+                    lo_e = seed_map[lo]
+                    al_hi = "*" if hi_e["at_large"] else " "
+                    al_lo = "*" if lo_e["at_large"] else " "
+                    print("    ({hi:>2}) {hi_name:<24}{al_hi}  vs  ({lo:>2}) {lo_name:<24}{al_lo}".format(
+                        hi=hi,
+                        hi_name=hi_e["program"]["name"][:23],
+                        al_hi=al_hi,
+                        lo=lo,
+                        lo_name=lo_e["program"]["name"][:23],
+                        al_lo=al_lo,
+                    ))
 
     final_four = []
     for region_name in REGIONS:

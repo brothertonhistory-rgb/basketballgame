@@ -1231,7 +1231,7 @@ def simulate_world_season(all_programs, season_year, verbose=True, free_agent_po
 
     # Step 3c: NCAA Tournament
     all_programs, tournament_results = simulate_ncaa_tournament(
-        all_programs, auto_bids, season_year=season_year, verbose=False
+        all_programs, auto_bids, season_year=season_year, verbose=True
     )
 
     # Step 4: Universe gravity
@@ -1524,61 +1524,61 @@ if __name__ == "__main__":
 
     # -----------------------------------------
     # DATABASE SETUP
-    # _ACTIVE_DB_PATH is read by simulate_world_season() to write history.
-    # Change SAVE_NAME to start a fresh save. Existing saves are resumed.
+    # NO_DB = True  -> skip all database ops (fast test runs)
+    # NO_DB = False -> save to database as normal
     # -----------------------------------------
-    SAVE_NAME = "dynasty_2024"
-    _ACTIVE_DB_PATH = None
+    NO_DB = True  # <-- flip to False when you want to save
 
-    from database import (init_db, get_db_path,
-                          seed_conferences_and_programs,
-                          seed_coaches, seed_players)
+    SAVE_NAME = "dynasty_test_2024"
+    _ACTIVE_DB_PATH = None
 
     print("Loading all D1 programs...")
     all_programs = build_all_d1_programs()
     print("Loaded " + str(len(all_programs)) + " programs")
 
-    # Initialize or resume save
-    try:
-        # --- NEW SAVE ---
-        # Assign IDs by list order. Permanent for this save.
-        # Different saves (custom teams, historical eras) get their own ID space.
+    if NO_DB:
+        print("Database: OFF (test mode)")
         for i, p in enumerate(all_programs, start=1):
             p["program_id"] = i
+    else:
+        from database import (init_db, get_db_path,
+                              seed_conferences_and_programs,
+                              seed_coaches, seed_players)
 
-        _ACTIVE_DB_PATH = init_db(SAVE_NAME, overwrite=False)
-        print("New save created: " + SAVE_NAME)
-        seed_conferences_and_programs(_ACTIVE_DB_PATH, all_programs)
-        seed_coaches(_ACTIVE_DB_PATH, all_programs)
-        seed_players(_ACTIVE_DB_PATH, all_programs)
+        try:
+            # --- NEW SAVE ---
+            for i, p in enumerate(all_programs, start=1):
+                p["program_id"] = i
 
-    except FileExistsError:
-        # --- RESUMING SAVE ---
-        # Load stable IDs from the database and stamp them back onto
-        # the program dicts. Never reassign by list order on resume --
-        # list order could change if programs_data.py is ever edited.
-        _ACTIVE_DB_PATH = get_db_path(SAVE_NAME)
-        print("Resuming existing save: " + SAVE_NAME)
+            _ACTIVE_DB_PATH = init_db(SAVE_NAME, overwrite=False)
+            print("New save created: " + SAVE_NAME)
+            seed_conferences_and_programs(_ACTIVE_DB_PATH, all_programs)
+            seed_coaches(_ACTIVE_DB_PATH, all_programs)
+            seed_players(_ACTIVE_DB_PATH, all_programs)
 
-        import sqlite3 as _sqlite3
-        _conn = _sqlite3.connect(_ACTIVE_DB_PATH)
-        _rows = _conn.execute("SELECT program_id, name FROM programs").fetchall()
-        _conn.close()
+        except FileExistsError:
+            # --- RESUMING SAVE ---
+            _ACTIVE_DB_PATH = get_db_path(SAVE_NAME)
+            print("Resuming existing save: " + SAVE_NAME)
 
-        _id_map = {row[1]: row[0] for row in _rows}
-        _unmatched = []
-        for p in all_programs:
-            if p["name"] in _id_map:
-                p["program_id"] = _id_map[p["name"]]
-            else:
-                # New program not in registry (e.g. expansion team added after save)
-                next_id = max(_id_map.values(), default=0) + 1
-                p["program_id"] = next_id
-                _id_map[p["name"]] = next_id
-                _unmatched.append(p["name"])
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(_ACTIVE_DB_PATH)
+            _rows = _conn.execute("SELECT program_id, name FROM programs").fetchall()
+            _conn.close()
 
-        if _unmatched:
-            print("  New programs assigned IDs: " + ", ".join(_unmatched))
+            _id_map = {row[1]: row[0] for row in _rows}
+            _unmatched = []
+            for p in all_programs:
+                if p["name"] in _id_map:
+                    p["program_id"] = _id_map[p["name"]]
+                else:
+                    next_id = max(_id_map.values(), default=0) + 1
+                    p["program_id"] = next_id
+                    _id_map[p["name"]] = next_id
+                    _unmatched.append(p["name"])
+
+            if _unmatched:
+                print("  New programs assigned IDs: " + ", ".join(_unmatched))
 
     print("")
     print("=== STARTING TIER DISTRIBUTION ===")
@@ -1592,8 +1592,8 @@ if __name__ == "__main__":
 
     # Season loop -- range(2024, 2030) = 6 seasons (normal run)
     # Single season validation: range(2024, 2025)
-    # Current setting: 6 seasons (2024-2029)
-    for year in range(2024, 2030):
+    # Current setting: 2 seasons (2024-2025)
+    for year in range(2024, 2026):
         all_programs, recruiting_class, cycle_summary, lifecycle_summary, auto_bids, tournament_results, portal_report, free_agent_pool = simulate_world_season(
             all_programs, season_year=year, verbose=True,
             free_agent_pool=free_agent_pool,
