@@ -469,37 +469,54 @@ def get_scheduling_profile(program):
     # Floor conf and low major reality check -- override aggression
     if conf_tier == "floor_conf":
         return {
-            "max_road_games":    8,   # they go wherever they're paid to go
+            "max_road_games":    10,  # paycheck road teams -- almost all road
             "min_quality_games": 0,
             "signature_games":   0,
             "neutral_appetite":  False,
             "paycheck_road":     True,
-            "home_games_target": random.randint(0, 2),  # 0-2 home games
+            "home_games_target": random.randint(0, 2),
         }
 
     if conf_tier == "low_major":
+        # Road games scale with aggression
+        # Even low aggression low_major teams take several road paycheck games
+        if aggression >= 7:
+            max_road = 6
+        elif aggression >= 4:
+            max_road = 4
+        else:
+            max_road = 2
         return {
-            "max_road_games":    4,
+            "max_road_games":    max_road,
             "min_quality_games": 0,
             "signature_games":   1,
             "neutral_appetite":  False,
-            "paycheck_road":     aggression <= 2,  # only extreme low aggression takes paycheck road
+            "paycheck_road":     aggression <= 2,
             "home_games_target": random.randint(3, 7),
         }
 
-    # Power and high major -- aggression drives everything
+    # Power and high major -- aggression drives road limits
+    if aggression >= 9:
+        max_road = 3
+    elif aggression >= 7:
+        max_road = 2
+    elif aggression >= 5:
+        max_road = 1
+    else:
+        max_road = 0  # no true road games for low aggression power programs
+
     if aggression >= 9:
         return {
-            "max_road_games":    3,
-            "min_quality_games": 4,   # wants 4+ top-50 opponents
-            "signature_games":   3,   # multiple marquee home games
+            "max_road_games":    max_road,
+            "min_quality_games": 4,
+            "signature_games":   3,
             "neutral_appetite":  True,
             "paycheck_road":     False,
-            "home_games_target": None,  # no cupcake minimum
+            "home_games_target": None,
         }
     elif aggression >= 7:
         return {
-            "max_road_games":    2,
+            "max_road_games":    max_road,
             "min_quality_games": 2,
             "signature_games":   2,
             "neutral_appetite":  True,
@@ -508,27 +525,26 @@ def get_scheduling_profile(program):
         }
     elif aggression >= 5:
         return {
-            "max_road_games":    1,
-            "min_quality_games": 1,   # at least 1 quality opponent
-            "signature_games":   1,   # one marquee home game for the fans
+            "max_road_games":    max_road,
+            "min_quality_games": 1,
+            "signature_games":   1,
             "neutral_appetite":  prestige >= 55,
             "paycheck_road":     False,
             "home_games_target": None,
         }
     elif aggression >= 3:
         return {
-            "max_road_games":    0,   # no true road games
-            "min_quality_games": 1,   # even pillow-soft schedules have one good home game
+            "max_road_games":    max_road,
+            "min_quality_games": 1,
             "signature_games":   1,
             "neutral_appetite":  False,
             "paycheck_road":     False,
             "home_games_target": None,
         }
     else:
-        # Aggression 1-2: maximum cowardice -- all home, one okay opponent
         return {
-            "max_road_games":    0,
-            "min_quality_games": 1,   # one decent opponent, at home
+            "max_road_games":    max_road,
+            "min_quality_games": 1,
             "signature_games":   1,
             "neutral_appetite":  False,
             "paycheck_road":     False,
@@ -1016,158 +1032,357 @@ def _fulfill_obligations(calendar, all_programs, year,
             processed_series.add(series_id)
 
 
+def _generate_wish_list(program, slots_needed, conf_game_counts, noncon_count, rng):
+    """
+    Generate a coach's ideal non-conference schedule as a list of slot demands.
+
+    Each slot is a dict:
+        location:  'home' | 'away' | 'neutral'
+        opp_tier:  'elite' | 'quality' | 'mid' | 'low' | 'cupcake' | 'any'
+
+    Opponent tiers by prestige:
+        elite:   65+
+        quality: 45-64
+        mid:     25-44
+        low:     12-24
+        cupcake: <12
+
+    Power conference teams always have 60%+ home games enforced.
+    """
+    aggression = program.get("scheduling_aggression", 5)
+    conf_tier  = get_conference_tier(program["conference"])["tier"]
+    prestige   = program.get("prestige_current", 30)
+
+    wishes = []
+
+    if conf_tier == "floor_conf":
+        # Almost entirely road paycheck games, 0-2 home games
+        home_count = rng.randint(0, 2)
+        away_count = max(0, slots_needed - home_count)
+        for _ in range(home_count):
+            wishes.append({"location": "home", "opp_tier": "low"})
+        for _ in range(away_count):
+            wishes.append({"location": "away", "opp_tier": "elite"})
+        return wishes
+
+    if conf_tier == "low_major":
+        # Mix of home games and road paycheck trips
+        road_max   = 4 if aggression >= 3 else 2
+        away_count = min(road_max, rng.randint(1, 4))
+        home_count = max(0, slots_needed - away_count)
+        for _ in range(home_count):
+            tier = rng.choice(["low", "low", "mid", "cupcake"])
+            wishes.append({"location": "home", "opp_tier": tier})
+        for _ in range(away_count):
+            wishes.append({"location": "away", "opp_tier": "elite"})
+        return wishes
+
+    # Power and high major -- aggression-driven wish list
+    # Hard rule: 60%+ home games for power conference
+    min_home = int(slots_needed * 0.6) if conf_tier == "power" else 0
+
+    if aggression >= 9:
+        # Aggressive: quality opponents, road trips, neutrals
+        road_games    = min(3, rng.randint(2, 3))
+        neutral_games = rng.randint(1, 2)
+        home_games    = max(min_home, slots_needed - road_games - neutral_games)
+        road_games    = slots_needed - home_games - neutral_games
+
+        for _ in range(home_games):
+            tier = rng.choices(
+                ["elite", "quality", "mid", "low", "cupcake"],
+                weights=[25, 30, 20, 15, 10], k=1)[0]
+            wishes.append({"location": "home", "opp_tier": tier})
+        for _ in range(neutral_games):
+            wishes.append({"location": "neutral", "opp_tier": "quality"})
+        for _ in range(max(0, road_games)):
+            wishes.append({"location": "away", "opp_tier": "quality"})
+
+    elif aggression >= 7:
+        road_games    = min(2, rng.randint(1, 2))
+        neutral_games = rng.randint(0, 1)
+        home_games    = max(min_home, slots_needed - road_games - neutral_games)
+        road_games    = slots_needed - home_games - neutral_games
+
+        for _ in range(home_games):
+            tier = rng.choices(
+                ["elite", "quality", "mid", "low", "cupcake"],
+                weights=[15, 25, 25, 20, 15], k=1)[0]
+            wishes.append({"location": "home", "opp_tier": tier})
+        for _ in range(neutral_games):
+            wishes.append({"location": "neutral", "opp_tier": "mid"})
+        for _ in range(max(0, road_games)):
+            wishes.append({"location": "away", "opp_tier": "quality"})
+
+    elif aggression >= 5:
+        road_games    = rng.randint(0, 1)
+        neutral_games = rng.randint(0, 1)
+        home_games    = max(min_home, slots_needed - road_games - neutral_games)
+        road_games    = slots_needed - home_games - neutral_games
+
+        for _ in range(home_games):
+            tier = rng.choices(
+                ["quality", "mid", "low", "cupcake"],
+                weights=[15, 25, 30, 30], k=1)[0]
+            wishes.append({"location": "home", "opp_tier": tier})
+        if neutral_games:
+            wishes.append({"location": "neutral", "opp_tier": "mid"})
+        for _ in range(max(0, road_games)):
+            wishes.append({"location": "away", "opp_tier": "mid"})
+
+    elif aggression >= 3:
+        # Soft scheduler -- mostly home cupcakes, one quality home game
+        road_games  = 0
+        home_games  = slots_needed
+        # At least one decent home game even for pillow-soft schedules
+        wishes.append({"location": "home", "opp_tier": "quality"})
+        for _ in range(home_games - 1):
+            tier = rng.choices(
+                ["mid", "low", "cupcake"],
+                weights=[20, 40, 40], k=1)[0]
+            wishes.append({"location": "home", "opp_tier": tier})
+
+    else:
+        # Maximum cowardice -- all home cupcakes + one okay opponent
+        wishes.append({"location": "home", "opp_tier": "quality"})
+        for _ in range(slots_needed - 1):
+            wishes.append({"location": "home", "opp_tier": "cupcake"})
+
+    rng.shuffle(wishes)
+    return wishes[:slots_needed]
+
+
+def _prestige_tier(prestige):
+    """Map prestige to opponent tier label."""
+    if prestige >= 65:   return "elite"
+    if prestige >= 45:   return "quality"
+    if prestige >= 25:   return "mid"
+    if prestige >= 12:   return "low"
+    return "cupcake"
+
+
 def _schedule_remaining(calendar, all_programs, year,
                           noncon_count, road_count, new_obligations, rng):
     """
-    Fill remaining non-conference slots for all programs.
-    Uses scheduling_aggression profile to drive opponent quality,
-    road game willingness, and neutral site appetite.
+    Fill non-conference slots using wish list matchmaking.
+
+    Each team generates an ideal schedule demand (wish list).
+    The scheduler pairs supply with demand:
+      - Home slots seek away teams whose road demands match
+      - Away slots seek home teams whose home demands match
+      - Neutral slots pair teams of similar prestige
+
+    Power programs post their demands first (they set the market).
+    Everyone else fills around them.
+    Unmatched slots get filled with whatever's available.
     """
     noncon_dates     = calendar.get_noncon_dates()
     conf_game_counts = _estimate_conf_games(all_programs, calendar)
 
-    def needs_games(prog):
+    def slots_remaining(prog):
         conf_games = conf_game_counts.get(prog["name"], 18)
         target     = get_noncon_slots(prog["conference"], conf_games)
         current    = noncon_count.get(prog["name"], 0)
         return max(0, target - current)
 
-    # Sort high prestige first
-    sorted_programs = sorted(all_programs,
-                             key=lambda p: p.get("prestige_current", 0),
-                             reverse=True)
+    # Build wish lists for every program
+    wish_lists = {}
+    for p in all_programs:
+        n = slots_remaining(p)
+        if n > 0:
+            wish_lists[p["name"]] = _generate_wish_list(p, n, conf_game_counts,
+                                                         noncon_count, rng)
+
+    prog_map = {p["name"]: p for p in all_programs}
+
+    # Sort by conference tier then aggression -- power programs post first
+    tier_order = {"power": 0, "high_major": 1, "mid_major": 2,
+                  "low_major": 3, "floor_conf": 4}
+    sorted_programs = sorted(
+        all_programs,
+        key=lambda p: (
+            tier_order.get(get_conference_tier(p["conference"])["tier"], 5),
+            -p.get("scheduling_aggression", 5)
+        )
+    )
+
+    scheduled_pairs = set()  # track (home, away) to avoid duplicates
 
     for program in sorted_programs:
-        slots_needed = needs_games(program)
-        if slots_needed == 0:
+        wishes = wish_lists.get(program["name"], [])
+        if not wishes:
             continue
-
-        profile  = get_scheduling_profile(program)
-        prestige = program.get("prestige_current", 30)
 
         already_scheduled = _get_scheduled_opponents(calendar, program["name"])
-        current_road      = road_count.get(program["name"], 0)
+        prestige          = program.get("prestige_current", 30)
 
-        # Build opponent pool
-        pool = build_opponent_pool(
-            program, all_programs,
-            exclude_names=already_scheduled | {program["name"]},
-            rng=rng
-        )
+        for wish in list(wishes):
+            location = wish["location"]
+            opp_tier = wish["opp_tier"]
 
-        # For paycheck road programs (floor_conf/low_major), seek programs
-        # willing to host them -- sort pool by prestige descending so they
-        # approach the best programs first
-        if profile["paycheck_road"]:
-            pool = sorted(pool,
-                          key=lambda p: p.get("prestige_current", 0),
-                          reverse=True)
+            # Build candidate pool for this wish
+            candidates = []
+            for other in all_programs:
+                if other["name"] == program["name"]:
+                    continue
+                if other["conference"] == program["conference"]:
+                    continue
+                if other["name"] in already_scheduled:
+                    continue
+                if slots_remaining(other) <= 0:
+                    continue
 
-        # Fallback pool if primary pool is thin
-        if len(pool) < slots_needed * 2:
-            fallback = [
-                p for p in all_programs
-                if p["name"] != program["name"]
-                and p["conference"] != program["conference"]
-                and p["name"] not in already_scheduled
-                and p["name"] not in {q["name"] for q in pool}
-            ]
-            rng.shuffle(fallback)
-            pool = pool + fallback
+                opp_prestige = other.get("prestige_current", 30)
+                other_tier   = _prestige_tier(opp_prestige)
 
-        slots_filled    = 0
-        quality_placed  = 0  # games vs prestige 50+ opponents
+                # Check tier match -- 'any' always matches
+                if opp_tier != "any" and other_tier != opp_tier:
+                    # Allow one tier up or down for flexibility
+                    tier_ladder = ["cupcake", "low", "mid", "quality", "elite"]
+                    wish_idx  = tier_ladder.index(opp_tier) if opp_tier in tier_ladder else 2
+                    other_idx = tier_ladder.index(other_tier) if other_tier in tier_ladder else 2
+                    if abs(wish_idx - other_idx) > 1:
+                        continue
 
-        for opponent in pool:
-            if slots_filled >= slots_needed:
-                break
+                candidates.append(other)
 
-            opp_prestige = opponent.get("prestige_current", 30)
-            opp_conf   = conf_game_counts.get(opponent["name"], 18)
-            opp_target = get_noncon_slots(opponent["conference"], opp_conf)
-            opp_current = noncon_count.get(opponent["name"], 0)
+            # Distance-weighted selection:
+            # < 500 miles:  weight 10x  (Kansas City vs Kansas -- happens constantly)
+            # 500-1000 mi:  weight 3x   (regional but not local)
+            # 1000-2000 mi: weight 1x   (base probability)
+            # > 2000 miles: weight 0.1x (rare outlier -- Miami schedules Seattle once a century)
+            team_lat = program.get("latitude", 39.5)
+            team_lon = program.get("longitude", -98.0)
 
-            # Skip if opponent is already at their noncon target
-            if opp_current >= opp_target:
-                continue
-
-            p_self = prestige
-            p_opp  = opp_prestige
-            higher = program if p_self >= p_opp else opponent
-            lower  = opponent if p_self >= p_opp else program
-            h_host, l_host, gap_cat = get_series_format(p_self, p_opp)
-            series_id = make_series_id(program["name"], opponent["name"], year)
-
-            # Road game check -- respect max_road_games from profile
-            program_is_higher = p_self >= p_opp
-
-            # Home games at higher prestige campus
-            for _ in range(h_host):
-                if slots_filled >= slots_needed:
-                    break
-                placed = _place_noncon_game(
-                    calendar, higher, lower,
-                    noncon_dates, noncon_count, road_count,
-                    is_neutral=False, series_id=series_id
+            weighted = []
+            for other in candidates:
+                dist = haversine(
+                    team_lat, team_lon,
+                    other.get("latitude", 39.5),
+                    other.get("longitude", -98.0)
                 )
-                if placed:
-                    slots_filled += 1
+                if dist < 500:
+                    w = 10.0
+                elif dist < 1000:
+                    w = 3.0
+                elif dist < 2000:
+                    w = 1.0
+                else:
+                    w = 0.1
+                weighted.append((w, other))
+
+            # Sort by weight descending, shuffle within same weight band for variety
+            weighted.sort(key=lambda x: x[0], reverse=True)
+
+            # Build final ordered candidate list using weighted random draw
+            # Pull from weighted pool so regional teams appear far more often
+            # but distant teams still occasionally get picked
+            ordered_candidates = []
+            pool = list(weighted)
+            while pool:
+                weights = [w for w, _ in pool]
+                total   = sum(weights)
+                if total <= 0:
+                    break
+                probs = [w / total for w in weights]
+                idx   = rng.choices(range(len(pool)), weights=probs, k=1)[0]
+                ordered_candidates.append(pool[idx][1])
+                pool.pop(idx)
+
+            placed = False
+            for opponent in ordered_candidates:
+                pair_key = (program["name"], opponent["name"])
+                if pair_key in scheduled_pairs:
+                    continue
+
+                if location == "home":
+                    h, a = program, opponent
+                elif location == "away":
+                    h, a = opponent, program
+                else:  # neutral -- use geographic midpoint logic later, home for now
+                    h, a = program, opponent
+
+                result = _place_noncon_game(
+                    calendar, h, a,
+                    noncon_dates, noncon_count, road_count,
+                    is_neutral=(location == "neutral"),
+                    series_id=make_series_id(program["name"], opponent["name"], year)
+                )
+
+                if result:
+                    scheduled_pairs.add(pair_key)
+                    scheduled_pairs.add((opponent["name"], program["name"]))
                     already_scheduled.add(opponent["name"])
-                    if opp_prestige >= 50:
-                        quality_placed += 1
+                    wishes.remove(wish)
 
-            # Away games -- only if profile allows road games
-            for _ in range(l_host):
-                if slots_filled >= slots_needed:
+                    # Track 1-for-1 return obligation for even matchups
+                    p_self = prestige
+                    p_opp  = opponent.get("prestige_current", 30)
+                    _, _, gap_cat = get_series_format(p_self, p_opp)
+                    if gap_cat == "even" and location == "home":
+                        sid = make_series_id(program["name"], opponent["name"], year)
+                        add_obligation(
+                            opponent, program["name"],
+                            games_at_home=1, games_away=0,
+                            start_year=year + 1,
+                            series_id=sid + "_RET"
+                        )
+                        new_obligations.append((opponent["name"], program["name"], year + 1))
+                    placed = True
                     break
-                # Check road game limits
-                traveler = higher
-                if road_count.get(traveler["name"], 0) >= profile["max_road_games"]:
-                    break
-                if not can_travel_to(higher, lower):
-                    break
-                placed = _place_noncon_game(
-                    calendar, lower, higher,
-                    noncon_dates, noncon_count, road_count,
-                    is_neutral=False, series_id=series_id
-                )
-                if placed:
-                    slots_filled += 1
 
-            # 1-for-1 return obligation
-            if gap_cat == "even" and h_host == 1 and l_host == 1:
-                add_obligation(
-                    opponent, program["name"],
-                    games_at_home=1, games_away=0,
-                    start_year=year + 1,
-                    series_id=series_id + "_RET"
-                )
-                new_obligations.append((opponent["name"], program["name"], year + 1))
+            # If wish couldn't be fulfilled, try 'any' tier as fallback
+            if not placed and opp_tier != "any":
+                wish["opp_tier"] = "any"
 
-        # Last resort: pure home games for teams still short
-        # Floor conf teams skip this -- they don't host random home games
-        conf_tier = get_conference_tier(program["conference"])["tier"]
-        if conf_tier == "floor_conf":
+        wish_lists[program["name"]] = wishes
+
+    # Final pass -- fill any remaining slots with any available opponent
+    for program in sorted_programs:
+        remaining = slots_remaining(program)
+        if remaining <= 0:
             continue
 
-        slots_needed = needs_games(program)
-        if slots_needed > 0:
-            last_resort = [
+        conf_tier = get_conference_tier(program["conference"])["tier"]
+        if conf_tier == "floor_conf":
+            # Floor conf: try road games against anyone
+            candidates = [
                 p for p in all_programs
                 if p["name"] != program["name"]
                 and p["conference"] != program["conference"]
                 and p["name"] not in _get_scheduled_opponents(calendar, program["name"])
-                and p.get("prestige_current", 0) <= prestige + 15
+                and slots_remaining(p) > 0
             ]
-            rng.shuffle(last_resort)
-            for opponent in last_resort:
-                if needs_games(program) == 0:
+            rng.shuffle(candidates)
+            for opp in candidates:
+                if slots_remaining(program) <= 0:
                     break
                 _place_noncon_game(
-                    calendar, program, opponent,
+                    calendar, opp, program,
                     noncon_dates, noncon_count, road_count,
                     is_neutral=False,
-                    series_id=make_series_id(program["name"], opponent["name"], year)
+                    series_id=make_series_id(program["name"], opp["name"], year)
+                )
+        else:
+            # Everyone else: home games
+            prestige   = program.get("prestige_current", 30)
+            candidates = [
+                p for p in all_programs
+                if p["name"] != program["name"]
+                and p["conference"] != program["conference"]
+                and p["name"] not in _get_scheduled_opponents(calendar, program["name"])
+                and slots_remaining(p) > 0
+                and p.get("prestige_current", 0) <= prestige + 20
+            ]
+            rng.shuffle(candidates)
+            for opp in candidates:
+                if slots_remaining(program) <= 0:
+                    break
+                _place_noncon_game(
+                    calendar, program, opp,
+                    noncon_dates, noncon_count, road_count,
+                    is_neutral=False,
+                    series_id=make_series_id(program["name"], opp["name"], year)
                 )
 
 
@@ -1177,10 +1392,18 @@ def _place_noncon_game(calendar, home, away, noncon_dates,
                         event_name=None, series_id=None):
     """
     Find an available date and place a non-conference game.
-    Hard rule: 2-day minimum rest between non-conference games.
-    Also enforces 2-day buffer around tournament blocks.
+    Hard rules:
+      - 2-day minimum rest between non-conference games
+      - 2-day buffer around tournament blocks
+      - Away team road limit enforced from their scheduling profile
     Returns True if placed successfully.
     """
+    # Enforce road game cap for away team
+    if not is_neutral:
+        away_profile = get_scheduling_profile(away)
+        if road_count.get(away["name"], 0) >= away_profile["max_road_games"]:
+            return False
+
     for d in noncon_dates:
         if not calendar.both_can_play(home["name"], away["name"], d,
                                       max_per_week=3):
