@@ -243,22 +243,72 @@ def draw_tournament_sites(exclude_recent_cities=None):
     claimed.add(ff_pick['city'])
 
     # -----------------------------------------------------------------------
-    # STEP 2: Sweet 16 / Elite 8 — 4 sites, one per quadrant (4 of 5)
+    # STEP 2: Sweet 16 / Elite 8 — 4 sites with geographic diversity guarantee
+    # Hard rules:
+    #   - At least 1 site west of the Mississippi (lon < -90)
+    #   - At least 1 site east of the Mississippi (lon >= -90)
+    #   - At least 1 site in the northern half (lat >= 38)
+    #   - At least 1 site in the southern half (lat < 38)
     # Cannot use Final Four city or recent cities.
     # -----------------------------------------------------------------------
     regional_pool = [s for s in TOURNAMENT_SITES['sweet16_elite8'] if s['city'] not in claimed]
-    regional_by_q = {}
-    for site in regional_pool:
-        regional_by_q.setdefault(site['quadrant'], []).append(site)
 
-    chosen_quadrants = random.sample(list(regional_by_q.keys()), min(4, len(regional_by_q)))
+    MISS_LON = -90.0   # approximate Mississippi River longitude
+    LAT_MID  = 38.0    # approximate north/south midline
+
+    def pick_regional(pool, used, require_west=False, require_east=False,
+                      require_north=False, require_south=False):
+        """Pick one regional site satisfying optional geographic constraints."""
+        candidates = [s for s in pool if s['city'] not in used]
+        if require_west:
+            candidates = [s for s in candidates if s['longitude'] < MISS_LON]
+        if require_east:
+            candidates = [s for s in candidates if s['longitude'] >= MISS_LON]
+        if require_north:
+            candidates = [s for s in candidates if s['latitude'] >= LAT_MID]
+        if require_south:
+            candidates = [s for s in candidates if s['latitude'] < LAT_MID]
+        return random.choice(candidates) if candidates else None
+
     selected_regionals = []
-    for q in chosen_quadrants:
-        eligible = [s for s in regional_by_q[q] if s['city'] not in claimed]
-        if eligible:
-            pick = random.choice(eligible)
-            selected_regionals.append(pick)
-            claimed.add(pick['city'])  # lock this city out of first round
+    regional_used = set()
+
+    # Pick 1 guaranteed western site
+    pick = pick_regional(regional_pool, regional_used, require_west=True)
+    if pick:
+        selected_regionals.append(pick)
+        regional_used.add(pick['city'])
+
+    # Pick 1 guaranteed eastern site
+    pick = pick_regional(regional_pool, regional_used, require_east=True)
+    if pick:
+        selected_regionals.append(pick)
+        regional_used.add(pick['city'])
+
+    # Pick 1 guaranteed northern site (from remaining)
+    pick = pick_regional(regional_pool, regional_used, require_north=True)
+    if pick:
+        selected_regionals.append(pick)
+        regional_used.add(pick['city'])
+
+    # Pick 1 guaranteed southern site (from remaining)
+    pick = pick_regional(regional_pool, regional_used, require_south=True)
+    if pick:
+        selected_regionals.append(pick)
+        regional_used.add(pick['city'])
+
+    # If any slot failed to fill (edge case from exclusions), fill from remainder
+    while len(selected_regionals) < 4:
+        remaining_r = [s for s in regional_pool if s['city'] not in regional_used]
+        if not remaining_r:
+            break
+        pick = random.choice(remaining_r)
+        selected_regionals.append(pick)
+        regional_used.add(pick['city'])
+
+    # Lock all regional cities out of first round
+    for site in selected_regionals:
+        claimed.add(site['city'])
 
     # -----------------------------------------------------------------------
     # STEP 3: First / Second Round — 8 sites, at least 1 per quadrant
@@ -294,6 +344,271 @@ def draw_tournament_sites(exclude_recent_cities=None):
         'sweet16_elite8': selected_regionals,
         'final_four': ff_pick,
     }
+
+
+# Compass buckets — names within the same bucket cannot both appear in one bracket.
+# The four final names must come from four DIFFERENT buckets.
+COMPASS_BUCKETS = {
+    'North':     'NORTH',
+    'Northeast': 'NORTH',
+    'Northwest': 'NORTH',
+    'East':      'EAST',
+    'Southeast': 'EAST',
+    'South':     'SOUTH',
+    'Southwest': 'SOUTH',
+    'West':      'WEST',
+    'Northwest': 'WEST',
+    'Midwest':   'NEUTRAL',
+}
+
+# Ordered preference lists per relative position.
+# westernmost site prefers western names, easternmost prefers eastern, etc.
+POSITION_PREFERENCES = {
+    'west':  ['West', 'Northwest', 'Southwest'],
+    'east':  ['East', 'Northeast', 'Southeast'],
+    'north': ['North', 'Midwest', 'Northeast', 'Northwest'],
+    'south': ['South', 'Southeast', 'Southwest', 'Midwest'],
+}
+
+# All valid names in priority order for last-resort fallback
+ALL_DIRECTIONS = [
+    'West', 'Northwest', 'Southwest',
+    'East', 'Northeast', 'Southeast',
+    'South', 'North', 'Midwest'
+]
+
+
+def name_regionals(regional_sites):
+    """
+    Assign 4 unique directional names that ALWAYS span all four compass feels.
+
+    Hard rule: the four names must come from four different compass buckets:
+        NORTH bucket: North, Northeast, Northwest
+        EAST bucket:  East, Northeast, Southeast
+        SOUTH bucket: South, Southeast, Southwest
+        WEST bucket:  West, Northwest, Southwest
+
+    Note Northeast/Southeast/Southwest/Northwest each span two buckets —
+    that flexibility is what lets us resolve tricky draws.
+
+    Logic:
+    1. Identify westernmost, easternmost, northernmost-middle, southernmost-middle.
+    2. Assign each a preferred name from their position preference list.
+    3. Enforce bucket diversity — if two sites claim names from the same bucket,
+       bump the lower-priority one to its next available option in a different bucket.
+    4. Never use the same name twice.
+    """
+    if len(regional_sites) != 4:
+        result = []
+        for i, site in enumerate(regional_sites):
+            s = dict(site)
+            s['regional_name'] = ALL_DIRECTIONS[i]
+            result.append(s)
+        return result
+
+    # Identify positional roles
+    sorted_lon = sorted(regional_sites, key=lambda s: s['longitude'])
+    westernmost  = sorted_lon[0]
+    easternmost  = sorted_lon[3]
+    middle_two   = sorted(sorted_lon[1:3], key=lambda s: s['latitude'], reverse=True)
+    north_mid    = middle_two[0]
+    south_mid    = middle_two[1]
+
+    roles = [
+        (westernmost, 'west'),
+        (easternmost, 'east'),
+        (north_mid,   'north'),
+        (south_mid,   'south'),
+    ]
+
+    # Bucket membership — a name can satisfy multiple buckets
+    NAME_BUCKETS = {
+        'West':      {'WEST'},
+        'Northwest': {'WEST', 'NORTH'},
+        'Southwest': {'WEST', 'SOUTH'},
+        'East':      {'EAST'},
+        'Northeast': {'EAST', 'NORTH'},
+        'Southeast': {'EAST', 'SOUTH'},
+        'North':     {'NORTH'},
+        'South':     {'SOUTH'},
+        'Midwest':   {'NEUTRAL'},
+    }
+
+    # Required buckets — we must cover all four
+    required_buckets = {'NORTH', 'EAST', 'SOUTH', 'WEST'}
+
+    # Build candidate lists per role, extended with all directions as fallback
+    def candidates_for(role):
+        prefs = POSITION_PREFERENCES[role]
+        extras = [d for d in ALL_DIRECTIONS if d not in prefs]
+        return prefs + extras
+
+    # Greedy assignment with bucket enforcement
+    # Try all permutations of the 4 roles to find one that covers all 4 buckets
+    from itertools import permutations
+
+    best_result = None
+    for role_order in permutations(roles):
+        used_names = set()
+        covered_buckets = set()
+        assignment = []
+        valid = True
+
+        for site, role in role_order:
+            candidates = candidates_for(role)
+            chosen = None
+            for name in candidates:
+                if name in used_names:
+                    continue
+                buckets = NAME_BUCKETS.get(name, {'NEUTRAL'})
+                # Check if this name adds value without duplicating a bucket
+                # we've already fully covered with a more specific name
+                chosen = name
+                used_names.add(name)
+                covered_buckets.update(buckets)
+                assignment.append((site, name))
+                break
+            if not chosen:
+                valid = False
+                break
+
+        if valid and required_buckets.issubset(covered_buckets):
+            best_result = assignment
+            break
+
+    # If no perfect solution found (extremely unlikely), use first valid assignment
+    if not best_result:
+        used_names = set()
+        best_result = []
+        for site, role in roles:
+            for name in candidates_for(role):
+                if name not in used_names:
+                    used_names.add(name)
+                    best_result.append((site, name))
+                    break
+
+    # Build result dicts
+    result = []
+    for site, name in best_result:
+        site_copy = dict(site)
+        site_copy['regional_name'] = name
+        result.append(site_copy)
+
+    return result
+
+
+def build_bracket(seeded_field, draw):
+    """
+    Assemble the full 64-team bracket.
+
+    seeded_field: list of 64 dicts in seed order, each with keys:
+        school_id, name, seed, latitude, longitude, city
+
+    draw: output of draw_tournament_sites(), with sweet16_elite8 sites
+          already named via name_regionals()
+
+    Returns bracket dict:
+    {
+        'regional_name': {
+            'first_second_site': site_dict,
+            'regional_site': site_dict,
+            'games': [
+                {'seed': 1, 'team': ...},
+                {'seed': 16, 'team': ...},
+                ...8 matchups...
+            ]
+        }
+    }
+
+    Placement logic:
+        1 seeds: closest first_second site (home city advantage applies)
+        2 seeds: closest remaining first_second site in their regional pod
+        3-4 seeds: proximity preference within pod
+        5-16 seeds: fill remaining slots by bracket structure
+    """
+    first_sites = list(draw['first_second'])
+    regional_sites = draw['sweet16_elite8']  # should have regional_name attached
+
+    # Build bracket pods - one per regional site
+    pods = {}
+    for reg in regional_sites:
+        pods[reg['regional_name']] = {
+            'regional_site': reg,
+            'first_second_sites': [],  # 2 first round sites per regional
+            'slots': [],               # 16 teams per regional
+        }
+
+    regional_names = list(pods.keys())
+
+    # --- Assign 2 first_second sites to each regional (8 sites / 4 regionals) ---
+    # Distribute by proximity to regional site
+    available_first = list(first_sites)
+    for reg_name in regional_names:
+        reg_site = pods[reg_name]['regional_site']
+        # Sort available first sites by distance to this regional
+        available_first.sort(key=lambda s: haversine(
+            reg_site['latitude'], reg_site['longitude'],
+            s['latitude'], s['longitude']
+        ))
+        # Take closest available
+        for _ in range(2):
+            if available_first:
+                pods[reg_name]['first_second_sites'].append(available_first.pop(0))
+
+    # --- Place 1 seeds ---
+    # Each 1 seed gets closest first_second site, home city advantage applies
+    one_seeds = [t for t in seeded_field if t['seed'] == 1]
+    used_regionals_for_ones = {}
+
+    # Sort 1 seeds by overall seed ranking
+    for team in one_seeds:
+        all_first_sites = first_sites
+        best_site, dist = assign_seed_to_site(
+            team['latitude'], team['longitude'], team['city'], all_first_sites
+        )
+        # Find which regional owns this first site
+        for reg_name, pod in pods.items():
+            if any(s['city'] == best_site['city'] for s in pod['first_second_sites']):
+                used_regionals_for_ones[team['school_id']] = reg_name
+                pods[reg_name]['slots'].append({'seed': team['seed'], 'team': team})
+                break
+
+    # --- Place remaining seeds 2-16 into each regional to fill 16 slots ---
+    remaining_teams = [t for t in seeded_field if t['seed'] > 1]
+
+    # Seeds 2-4: proximity preference
+    for seed_num in [2, 3, 4]:
+        seed_teams = [t for t in remaining_teams if t['seed'] == seed_num]
+        for team in seed_teams:
+            # Find regional with fewest teams that has open slots
+            open_pods = [(name, pod) for name, pod in pods.items()
+                         if len(pod['slots']) < 16]
+            if not open_pods:
+                break
+            # Prefer closest regional site
+            open_pods.sort(key=lambda x: haversine(
+                team['latitude'], team['longitude'],
+                x[1]['regional_site']['latitude'],
+                x[1]['regional_site']['longitude']
+            ))
+            for pod_name, pod in open_pods:
+                if len(pod['slots']) < 16:
+                    pod['slots'].append({'seed': team['seed'], 'team': team})
+                    remaining_teams = [t for t in remaining_teams if t['school_id'] != team['school_id']]
+                    break
+
+    # --- Fill remaining slots round-robin by seed ---
+    for team in remaining_teams:
+        # Find pod with fewest teams
+        open_pods = [(name, pod) for name, pod in pods.items()
+                     if len(pod['slots']) < 16]
+        if not open_pods:
+            break
+        open_pods.sort(key=lambda x: len(x[1]['slots']))
+        pod_name, pod = open_pods[0]
+        pod['slots'].append({'seed': team['seed'], 'team': team})
+
+    return pods
 
 
 def assign_seed_to_site(school_lat, school_lon, school_city, available_sites):
