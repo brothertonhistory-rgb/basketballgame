@@ -52,8 +52,19 @@ PERFORMANCE_MULTIPLIER = 3
 SEASON_PRESTIGE_CAP    = 4.0
 CEILING_DRAG     = {1: 0.3, 2: 0.6}
 CEILING_DRAG_MAX = 1.0
-FLOOR_LIFT     = {1: 0.2, 2: 0.4}
-FLOOR_LIFT_MAX = 0.7
+
+# Floor is now a gravitational pull, not a hard wall.
+# A program below its conference floor feels upward pressure
+# proportional to how far below it has fallen.
+# FLOOR_GRAVITY_RATE: fraction of the gap applied as upward nudge per season.
+#   e.g. 0.15 means a program 10 pts below floor gets +1.5 per season.
+# FLOOR_GRAVITY_MAX: cap on how much floor gravity can nudge in one season.
+# A program in sustained freefall will settle 8-15 pts below the floor
+# at equilibrium (gravity pull balanced against bad-results drag).
+FLOOR_GRAVITY_RATE = 0.15
+FLOOR_GRAVITY_MAX  = 2.5
+# Hard absolute minimum -- no program can ever fall below 1.
+ABSOLUTE_PRESTIGE_MIN = 1
 
 # AD hiring profiles -- distributed at world build
 _AD_PROFILES      = ["veteran_preferred", "pedigree_seeker", "analytics_forward",
@@ -673,6 +684,23 @@ def update_prestige_for_results(program, wins, losses, made_tournament, tourname
 
 
 def apply_conference_tier_pressure(program):
+    """
+    Applies conference ceiling drag and conference floor gravity.
+
+    CEILING (unchanged): Programs above their conference ceiling feel
+    increasing downward drag -- high_major programs don't stay at 90+
+    because the conference structure won't support it long-term.
+
+    FLOOR (rewritten): The floor is now a gravitational pull, not a wall.
+    A program below its conference floor feels upward pressure proportional
+    to how far below it has fallen. At equilibrium, a sustained 15-year
+    dumpster fire at a power conference program settles 8-15 points below
+    the floor -- still dragged down by bad results, but the conference
+    identity gravity keeps them from falling to 20 and staying there.
+
+    Programs are never hard-clamped to the floor. Only the absolute minimum
+    of 1 is enforced. The conference floor exerts gravity, not physics.
+    """
     from programs_data import get_conference_tier
 
     current = program["prestige_current"]
@@ -694,6 +722,9 @@ def apply_conference_tier_pressure(program):
 
     adjustment = 0.0
 
+    # --- CEILING DRAG (unchanged) ---
+    # Programs above their conference ceiling feel increasing downward drag.
+    # Power conferences have no ceiling (ceiling=100) so this never fires for them.
     if ceiling < 100 and current > ceiling:
         state["seasons_above_ceiling"] += 1
         n = state["seasons_above_ceiling"]
@@ -701,17 +732,26 @@ def apply_conference_tier_pressure(program):
     else:
         state["seasons_above_ceiling"] = 0
 
+    # --- FLOOR GRAVITY (rewritten) ---
+    # If below floor: apply upward pull proportional to gap.
+    # The pull grows as the program falls further, creating a soft equilibrium.
+    # A program that's 5 pts below gets +0.75/season.
+    # A program that's 15 pts below gets +2.25/season (capped at 2.5).
+    # This keeps power programs from falling to 25 while still allowing
+    # a 15-year disaster to settle in the low-30s to upper-20s.
     if current < floor:
         state["seasons_below_floor"] += 1
-        n = state["seasons_below_floor"]
-        adjustment += FLOOR_LIFT_MAX if n >= 3 else FLOOR_LIFT.get(n, FLOOR_LIFT_MAX)
+        gap        = floor - current
+        floor_pull = min(FLOOR_GRAVITY_MAX, gap * FLOOR_GRAVITY_RATE)
+        adjustment += floor_pull
     else:
         state["seasons_below_floor"] = 0
 
     if adjustment == 0.0:
         return program
 
-    new_prestige = max(floor, min(100, current + adjustment))
+    # No hard floor clamp -- only the absolute minimum of 1 is enforced.
+    new_prestige = max(ABSOLUTE_PRESTIGE_MIN, min(100, current + adjustment))
     program["prestige_current"] = round(new_prestige, 1)
     program["prestige_grade"]   = prestige_grade(program["prestige_current"])
     return program
