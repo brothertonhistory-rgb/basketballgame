@@ -1091,35 +1091,76 @@ def print_ceiling_breakers(all_programs, season_year):
 # CONFERENCE SEASON
 # -----------------------------------------
 
-def simulate_conference_season(conference_programs, all_programs, season_year, verbose=False):
+def simulate_conference_season(conference_programs, all_programs, season_year,
+                               season_calendar=None, verbose=False):
     for p in conference_programs:
         p["wins"] = 0; p["losses"] = 0
         p["conf_wins"] = 0; p["conf_losses"] = 0
         p["season_results"] = []
 
-    conf_schedule     = build_conference_schedule(conference_programs)
-    non_conf_schedule = build_non_conference_schedule(conference_programs, all_programs)
-    full_schedule     = conf_schedule + non_conf_schedule
-    random.shuffle(full_schedule)
-
     conf_program_names = set(p["name"] for p in conference_programs)
 
-    for matchup in full_schedule:
-        home   = matchup["home"]
-        away   = matchup["away"]
-        result = simulate_game(home, away, verbose=False)
+    if season_calendar is not None:
+        # --- CALENDAR PATH (v1.0) ---
+        # Pull all UNPLAYED games where at least one team is in this conference.
+        # Simulate and mark as simulated immediately -- the simulated flag
+        # guarantees each slot fires exactly once across all conference loops.
+        #
+        # CRITICAL: record results for BOTH teams always, not just conference
+        # members. This is safe because simulated=True prevents double-firing.
+        # A non-conference game between Big 12 and SEC gets simulated when
+        # whichever conference loop hits it first -- both teams get their
+        # result recorded at that point. The other conference loop will skip
+        # this slot entirely because simulated=True.
+        conf_slots = []
+        for slot in season_calendar.get_games_in_order():
+            if slot.simulated:
+                continue
+            home_in = slot.home_team and slot.home_team["name"] in conf_program_names
+            away_in = slot.away_team and slot.away_team["name"] in conf_program_names
+            if home_in or away_in:
+                conf_slots.append(slot)
 
-        # Always record result for the home team if they belong to this conference
-        if home["name"] in conf_program_names:
+        prog_map_local = {p["name"]: p for p in all_programs}
+
+        for slot in conf_slots:
+            if slot.simulated:
+                continue
+            home   = slot.home_team
+            away   = slot.away_team
+            result = simulate_game(home, away, verbose=False)
+            slot.result    = result
+            slot.simulated = True
+
+            is_conf = slot.game_type == "conference"
+
+            # Record for home team (always)
             record_game_result(home, away["name"], result["home"], result["away"],
-                               is_home=True, is_conference=matchup["is_conference"])
+                               is_home=not slot.is_neutral, is_conference=is_conf)
 
-        # Only record result for the away team if they ALSO belong to this conference
-        # (i.e. conference games). Non-conference away teams get their result
-        # recorded by their own conference simulation.
-        if away["name"] in conf_program_names:
+            # Record for away team (always) -- simulated flag prevents double-counting
             record_game_result(away, home["name"], result["away"], result["home"],
-                               is_home=False, is_conference=matchup["is_conference"])
+                               is_home=False, is_conference=is_conf)
+
+    else:
+        # --- LEGACY BATCH PATH (fallback if no calendar) ---
+        conf_schedule     = build_conference_schedule(conference_programs)
+        non_conf_schedule = build_non_conference_schedule(conference_programs, all_programs)
+        full_schedule     = conf_schedule + non_conf_schedule
+        random.shuffle(full_schedule)
+
+        for matchup in full_schedule:
+            home   = matchup["home"]
+            away   = matchup["away"]
+            result = simulate_game(home, away, verbose=False)
+
+            if home["name"] in conf_program_names:
+                record_game_result(home, away["name"], result["home"], result["away"],
+                                   is_home=True, is_conference=matchup["is_conference"])
+
+            if away["name"] in conf_program_names:
+                record_game_result(away, home["name"], result["away"], result["home"],
+                                   is_home=False, is_conference=matchup["is_conference"])
 
     # Calculate conference standings before prestige pipeline
     calculate_conference_standings(conference_programs)
@@ -1129,9 +1170,8 @@ def simulate_conference_season(conference_programs, all_programs, season_year, v
         win_pct = p["wins"] / games if games > 0 else 0.0
         conf_finish_percentile = p.get("conf_finish_percentile", 0.5)
 
-        # Cap prestige calculation at 32 games -- standardized seasons
-        # shouldn't exceed this but guard against edge cases
-        PRESTIGE_GAME_CAP = 32
+        # Cap prestige calculation at 31 games -- standard D1 season
+        PRESTIGE_GAME_CAP = 31
         if games > PRESTIGE_GAME_CAP:
             capped_wins   = round(win_pct * PRESTIGE_GAME_CAP)
             capped_losses = PRESTIGE_GAME_CAP - capped_wins
@@ -1182,6 +1222,7 @@ def simulate_world_season(all_programs, season_year, verbose=True, free_agent_po
     Simulates a COMPLETE year for the entire world.
 
     Pipeline:
+      Step 0 -- Build season calendar + schedule all games.
       Step 1 -- Minutes allocation + stat init.
       Step 2 -- Cohesion initialization (first season).
       Step 3 -- Season simulation (games + per-program prestige pipeline).
@@ -1195,22 +1236,52 @@ def simulate_world_season(all_programs, season_year, verbose=True, free_agent_po
     from roster_minutes import allocate_minutes
     from cohesion import update_cohesion
     from game_engine import initialize_season_stats, finalize_season_stats
+    from calendar import SeasonCalendar
+    from scheduler import build_conference_schedule as cal_build_conf
+    from scheduler import schedule_noncon
 
     if free_agent_pool is None:
         free_agent_pool = []
 
-    for program in all_programs:
-        allocate_minutes(program)
-        if "cohesion_score" not in program:
-            update_cohesion(program, previous_minutes=None)
-        initialize_season_stats(program, season_year=season_year)
+    # --- STEP 0: BUILD SEASON CALENDAR ---
+    season_calendar = SeasonCalendar(season_year)
+    prog_map = {p["name"]: p for p in all_programs}
 
+    # Group programs by conference
     conferences = {}
     for p in all_programs:
         conf = p["conference"]
         if conf not in conferences:
             conferences[conf] = []
         conferences[conf].append(p)
+
+    # Build conference schedules onto the calendar
+    for conf_name, conf_programs in conferences.items():
+        if len(conf_programs) < 2:
+            continue
+        try:
+            cal_build_conf(season_calendar, conf_name, conf_programs)
+        except Exception as e:
+            if verbose:
+                print(f"  [calendar] Conference schedule error ({conf_name}): {e}")
+
+    # Build non-conference schedules onto the calendar
+    try:
+        new_obligations = schedule_noncon(season_calendar, all_programs, season_year)
+    except Exception as e:
+        if verbose:
+            print(f"  [calendar] Non-conference schedule error: {e}")
+        new_obligations = []
+
+    if verbose:
+        total_games = season_calendar.total_games()
+        print(f"\n  Calendar built: {total_games} games scheduled for {season_year}-{season_year+1}")
+
+    for program in all_programs:
+        allocate_minutes(program)
+        if "cohesion_score" not in program:
+            update_cohesion(program, previous_minutes=None)
+        initialize_season_stats(program, season_year=season_year)
 
     if verbose:
         print("")
@@ -1222,7 +1293,8 @@ def simulate_world_season(all_programs, season_year, verbose=True, free_agent_po
     for conf_name, conf_programs in conferences.items():
         if len(conf_programs) < 2:
             continue
-        simulate_conference_season(conf_programs, all_programs, season_year, verbose=False)
+        simulate_conference_season(conf_programs, all_programs, season_year,
+                                   season_calendar=season_calendar, verbose=False)
 
     # Step 3b: Conference tournaments
     auto_bids, conf_tourney_results = simulate_all_conference_tournaments(

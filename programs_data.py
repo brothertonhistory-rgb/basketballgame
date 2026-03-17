@@ -148,6 +148,8 @@ ALL_D1_PROGRAMS = [
     {"name": "UMass Lowell",    "nickname": "River Hawks",   "city": "Lowell",        "state": "MA", "conference": "America East", "home_court": "Tsongas Center",                       "venue_rating": 46, "tourney": 0,  "ff": 0, "titles": 0},
     {"name": "New Hampshire",   "nickname": "Wildcats",      "city": "Durham",        "state": "NH", "conference": "America East", "home_court": "Lundholm Gym",                         "venue_rating": 36, "tourney": 0,  "ff": 0, "titles": 0},
     {"name": "Vermont",         "nickname": "Catamounts",    "city": "Burlington",    "state": "VT", "conference": "America East", "home_court": "Patrick Gym",                          "venue_rating": 48, "tourney": 10, "ff": 0, "titles": 0},
+    {"name": "NJIT",            "nickname": "Highlanders","city": "Newark",        "state": "NJ", "conference": "America East", "home_court": "Fleisher Athletic Center",              "venue_rating": 38, "tourney": 1,  "ff": 0, "titles": 0},
+    {"name": "Hartford",        "nickname": "Hawks",         "city": "West Hartford", "state": "CT", "conference": "America East", "home_court": "Chase Family Arena",                   "venue_rating": 38, "tourney": 1,  "ff": 0, "titles": 0},
     # AMERICAN ATHLETIC
     {"name": "Charlotte",        "nickname": "49ers",           "city": "Charlotte",    "state": "NC", "conference": "American", "home_court": "Halton Arena",                      "venue_rating": 58, "tourney": 11, "ff": 1, "titles": 0},
     {"name": "East Carolina",    "nickname": "Pirates",         "city": "Greenville",   "state": "NC", "conference": "American", "home_court": "Williams Arena at Minges Coliseum",  "venue_rating": 52, "tourney": 2,  "ff": 0, "titles": 0},
@@ -182,13 +184,16 @@ ALL_D1_PROGRAMS = [
     {"name": "Virginia Tech",  "nickname": "Hokies",         "city": "Blacksburg",   "state": "VA", "conference": "ACC", "home_court": "Cassell Coliseum",                          "venue_rating": 65, "tourney": 13, "ff": 0,  "titles": 0},
     {"name": "Wake Forest",    "nickname": "Demon Deacons",  "city": "Winston-Salem","state": "NC", "conference": "ACC", "home_court": "Lawrence Joel Veterans Memorial Coliseum",  "venue_rating": 62, "tourney": 24, "ff": 1,  "titles": 0},
     # ASUN
-    {"name": "Austin Peay",       "nickname": "Governors","city": "Clarksville",  "state": "TN", "conference": "ASUN", "home_court": "F&M Bank Arena",      "venue_rating": 44, "tourney": 7,  "ff": 0, "titles": 0},
-    {"name": "Eastern Kentucky",  "nickname": "Colonels", "city": "Richmond",     "state": "KY", "conference": "ASUN", "home_court": "Baptist Health Arena", "venue_rating": 44, "tourney": 8,  "ff": 0, "titles": 0},
-    {"name": "Florida Gulf Coast","nickname": "Eagles",   "city": "Fort Myers",   "state": "FL", "conference": "ASUN", "home_court": "Alico Arena",          "venue_rating": 48, "tourney": 3,  "ff": 0, "titles": 0},
-    {"name": "Jacksonville",      "nickname": "Dolphins", "city": "Jacksonville", "state": "FL", "conference": "ASUN", "home_court": "Swisher Gymnasium",    "venue_rating": 40, "tourney": 5,  "ff": 1, "titles": 0},
-    {"name": "Lipscomb",          "nickname": "Bisons",   "city": "Nashville",    "state": "TN", "conference": "ASUN", "home_court": "Allen Arena",          "venue_rating": 42, "tourney": 2,  "ff": 0, "titles": 0},
-    {"name": "North Florida",     "nickname": "Ospreys",  "city": "Jacksonville", "state": "FL", "conference": "ASUN", "home_court": "UNF Arena",            "venue_rating": 38, "tourney": 1,  "ff": 0, "titles": 0},
-    {"name": "Stetson",           "nickname": "Hatters",  "city": "DeLand",       "state": "FL", "conference": "ASUN", "home_court": "Edmunds Center",       "venue_rating": 38, "tourney": 1,  "ff": 0, "titles": 0},
+    {"name": "Austin Peay",       "nickname": "Governors","city": "Clarksville",  "state": "TN", "conference": "ASUN", "home_court": "F&M Bank Arena",        "venue_rating": 44, "tourney": 7,  "ff": 0, "titles": 0},
+    {"name": "Eastern Kentucky",  "nickname": "Colonels", "city": "Richmond",     "state": "KY", "conference": "ASUN", "home_court": "Baptist Health Arena",   "venue_rating": 44, "tourney": 8,  "ff": 0, "titles": 0},
+    {"name": "Florida Gulf Coast","nickname": "Eagles",   "city": "Fort Myers",   "state": "FL", "conference": "ASUN", "home_court": "Alico Arena",            "venue_rating": 48, "tourney": 3,  "ff": 0, "titles": 0},
+    {"name": "Jacksonville",      "nickname": "Dolphins", "city": "Jacksonville", "state": "FL", "conference": "ASUN", "home_court": "Swisher Gymnasium",      "venue_rating": 40, "tourney": 5,  "ff": 1, "titles": 0},
+    {"name": "Lipscomb",          "nickname": "Bisons",   "city": "Nashville",    "state": "TN", "conference": "ASUN", "home_court": "Allen Arena",            "venue_rating": 42, "tourney": 2,  "ff": 0, "titles": 0},
+    {"name": "North Florida",     "nickname": "Ospreys",  "city": "Jacksonville", "state": "FL", "conference": "ASUN", "home_court": "UNF Arena",              "venue_rating": 38, "tourney": 1,  "ff": 0, "titles": 0},
+    {"name": "Stetson",           "nickname": "Hatters",  "city": "DeLand",       "state": "FL", "conference": "ASUN", "home_court": "Edmunds Center",         "venue_rating": 38, "tourney": 1,  "ff": 0, "titles": 0},
+    {"name": "Kennesaw State",    "nickname": "Owls",     "city": "Kennesaw",     "state": "GA", "conference": "ASUN", "home_court": "KSU Convocation Center",  "venue_rating": 38, "tourney": 0,  "ff": 0, "titles": 0},
+    {"name": "Queens",            "nickname": "Royals",   "city": "Charlotte",    "state": "NC", "conference": "ASUN", "home_court": "Levine Center",          "venue_rating": 36, "tourney": 0,  "ff": 0, "titles": 0},
+    {"name": "Central Arkansas",  "nickname": "Bears",    "city": "Conway",       "state": "AR", "conference": "ASUN", "home_court": "Farris Center",          "venue_rating": 40, "tourney": 1,  "ff": 0, "titles": 0},
     # ATLANTIC 10
     {"name": "Davidson",          "nickname": "Wildcats",        "city": "Davidson",     "state": "NC", "conference": "A-10", "home_court": "John M. Belk Arena",          "venue_rating": 52, "tourney": 15, "ff": 0, "titles": 0},
     {"name": "Dayton",            "nickname": "Flyers",          "city": "Dayton",       "state": "OH", "conference": "A-10", "home_court": "University of Dayton Arena",  "venue_rating": 72, "tourney": 20, "ff": 1, "titles": 0},
@@ -318,6 +323,8 @@ ALL_D1_PROGRAMS = [
     {"name": "Oakland",           "nickname": "Golden Grizzlies","city": "Rochester",      "state": "MI","conference": "Horizon","home_court": "Allentown Arena",          "venue_rating": 44,"tourney": 2, "ff": 0,"titles": 0},
     {"name": "Wright State",      "nickname": "Raiders",         "city": "Dayton",         "state": "OH","conference": "Horizon","home_court": "Nutter Center",            "venue_rating": 54,"tourney": 3, "ff": 0,"titles": 0},
     {"name": "Youngstown State",  "nickname": "Penguins",        "city": "Youngstown",     "state": "OH","conference": "Horizon","home_court": "Beeghly Center",           "venue_rating": 44,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "IUPUI",             "nickname": "Jaguars",         "city": "Indianapolis",   "state": "IN","conference": "Horizon","home_court": "Indiana Farmers Coliseum", "venue_rating": 44,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "Purdue Fort Wayne", "nickname": "Mastodons",       "city": "Fort Wayne",     "state": "IN","conference": "Horizon","home_court": "Memorial Coliseum",        "venue_rating": 42,"tourney": 0, "ff": 0,"titles": 0},
     # IVY LEAGUE
     {"name": "Brown",     "nickname": "Bears",     "city": "Providence",   "state": "RI","conference": "Ivy League","home_court": "Pizzitola Sports Center","venue_rating": 44,"tourney": 1, "ff": 0,"titles": 0},
     {"name": "Columbia",  "nickname": "Lions",     "city": "New York",     "state": "NY","conference": "Ivy League","home_court": "Levien Gymnasium",       "venue_rating": 42,"tourney": 1, "ff": 0,"titles": 0},
@@ -394,13 +401,19 @@ ALL_D1_PROGRAMS = [
     {"name": "Sacred Heart",      "nickname": "Pioneers",  "city": "Fairfield",     "state": "CT","conference": "NEC","home_court": "William H. Pitt Center",     "venue_rating": 36,"tourney": 2, "ff": 0,"titles": 0},
     {"name": "Saint Francis (PA)","nickname": "Red Flash", "city": "Loretto",       "state": "PA","conference": "NEC","home_court": "DeGol Arena",                "venue_rating": 32,"tourney": 4, "ff": 0,"titles": 0},
     {"name": "Wagner",            "nickname": "Seahawks",  "city": "Staten Island", "state": "NY","conference": "NEC","home_court": "Spiro Sports Center",        "venue_rating": 34,"tourney": 2, "ff": 0,"titles": 0},
+    {"name": "Stonehill",           "nickname": "Skyhawks",  "city": "North Easton",  "state": "MA","conference": "NEC","home_court": "Merkert Gymnasium",          "venue_rating": 32,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "St. Francis Brooklyn","nickname": "Terriers","city": "Brooklyn",      "state": "NY","conference": "NEC","home_court": "Pope Physical Education Center","venue_rating": 32,"tourney": 2,"ff": 0,"titles": 0},
     # OHIO VALLEY
-    {"name": "Eastern Illinois",       "nickname": "Panthers",  "city": "Charleston",    "state": "IL","conference": "Ohio Valley","home_court": "Lantz Arena",         "venue_rating": 42,"tourney": 4, "ff": 0,"titles": 0},
-    {"name": "Morehead State",         "nickname": "Eagles",    "city": "Morehead",      "state": "KY","conference": "Ohio Valley","home_court": "Johnson Arena",       "venue_rating": 42,"tourney": 7, "ff": 0,"titles": 0},
-    {"name": "Southeast Missouri State","nickname": "Redhawks", "city": "Cape Girardeau","state": "MO","conference": "Ohio Valley","home_court": "Show Me Center",      "venue_rating": 48,"tourney": 4, "ff": 0,"titles": 0},
-    {"name": "Tennessee State",        "nickname": "Tigers",    "city": "Nashville",     "state": "TN","conference": "Ohio Valley","home_court": "Gentry Center",       "venue_rating": 40,"tourney": 3, "ff": 0,"titles": 0},
-    {"name": "Tennessee Tech",         "nickname": "Golden Eagles","city": "Cookeville", "state": "TN","conference": "Ohio Valley","home_court": "Hooper Eblen Center", "venue_rating": 46,"tourney": 4, "ff": 0,"titles": 0},
-    {"name": "UT Martin",              "nickname": "Skyhawks",  "city": "Martin",        "state": "TN","conference": "Ohio Valley","home_court": "Elam Center",         "venue_rating": 40,"tourney": 2, "ff": 0,"titles": 0},
+    {"name": "Eastern Illinois",        "nickname": "Panthers",    "city": "Charleston",     "state": "IL","conference": "Ohio Valley","home_court": "Lantz Arena",          "venue_rating": 42,"tourney": 4, "ff": 0,"titles": 0},
+    {"name": "Morehead State",          "nickname": "Eagles",      "city": "Morehead",       "state": "KY","conference": "Ohio Valley","home_court": "Johnson Arena",        "venue_rating": 42,"tourney": 7, "ff": 0,"titles": 0},
+    {"name": "Southeast Missouri State","nickname": "Redhawks",    "city": "Cape Girardeau", "state": "MO","conference": "Ohio Valley","home_court": "Show Me Center",       "venue_rating": 48,"tourney": 4, "ff": 0,"titles": 0},
+    {"name": "Tennessee State",         "nickname": "Tigers",      "city": "Nashville",      "state": "TN","conference": "Ohio Valley","home_court": "Gentry Center",        "venue_rating": 40,"tourney": 3, "ff": 0,"titles": 0},
+    {"name": "Tennessee Tech",          "nickname": "Golden Eagles","city": "Cookeville",    "state": "TN","conference": "Ohio Valley","home_court": "Hooper Eblen Center",  "venue_rating": 46,"tourney": 4, "ff": 0,"titles": 0},
+    {"name": "UT Martin",               "nickname": "Skyhawks",    "city": "Martin",         "state": "TN","conference": "Ohio Valley","home_court": "Elam Center",          "venue_rating": 40,"tourney": 2, "ff": 0,"titles": 0},
+    {"name": "Murray State",            "nickname": "Racers",      "city": "Murray",         "state": "KY","conference": "Ohio Valley","home_court": "CFSB Center",          "venue_rating": 52,"tourney": 15,"ff": 0,"titles": 0},
+    {"name": "Lindenwood",              "nickname": "Lions",       "city": "St. Charles",    "state": "MO","conference": "Ohio Valley","home_court": "Hyland Arena",         "venue_rating": 40,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "Southern Indiana",        "nickname": "Screaming Eagles","city": "Evansville", "state": "IN","conference": "Ohio Valley","home_court": "PAC",                  "venue_rating": 42,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "SIU Edwardsville",        "nickname": "Cougars",     "city": "Edwardsville",   "state": "IL","conference": "Ohio Valley","home_court": "First Community Arena", "venue_rating": 44,"tourney": 0, "ff": 0,"titles": 0},
     # PATRIOT
     {"name": "American",         "nickname": "Eagles",       "city": "Washington",  "state": "DC","conference": "Patriot","home_court": "Bender Arena",         "venue_rating": 46,"tourney": 3, "ff": 0,"titles": 0},
     {"name": "Army",             "nickname": "Black Knights","city": "West Point",  "state": "NY","conference": "Patriot","home_court": "Christl Arena",        "venue_rating": 44,"tourney": 2, "ff": 0,"titles": 0},
@@ -446,6 +459,8 @@ ALL_D1_PROGRAMS = [
     {"name": "Northwestern State",    "nickname": "Demons",      "city": "Natchitoches", "state": "LA","conference": "Southland","home_court": "Prather Coliseum",            "venue_rating": 38,"tourney": 3, "ff": 0,"titles": 0},
     {"name": "Southeastern Louisiana","nickname": "Lions",       "city": "Hammond",      "state": "LA","conference": "Southland","home_court": "University Center",           "venue_rating": 38,"tourney": 1, "ff": 0,"titles": 0},
     {"name": "Stephen F. Austin",     "nickname": "Lumberjacks", "city": "Nacogdoches",  "state": "TX","conference": "Southland","home_court": "William R. Johnson Coliseum", "venue_rating": 42,"tourney": 5, "ff": 0,"titles": 0},
+    {"name": "Incarnate Word",        "nickname": "Cardinals",   "city": "San Antonio",  "state": "TX","conference": "Southland","home_court": "McDermott Convocation Center","venue_rating": 38,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "Texas A&M-Corpus Christi","nickname": "Islanders", "city": "Corpus Christi","state": "TX","conference": "Southland","home_court": "American Bank Center",       "venue_rating": 40,"tourney": 1, "ff": 0,"titles": 0},
     # SWAC
     {"name": "Alabama A&M",          "nickname": "Bulldogs",    "city": "Huntsville",    "state": "AL","conference": "SWAC","home_court": "Alabama A&M Events Center",         "venue_rating": 34,"tourney": 1, "ff": 0,"titles": 0},
     {"name": "Alabama State",        "nickname": "Hornets",     "city": "Montgomery",    "state": "AL","conference": "SWAC","home_court": "Dunn-Oliver Acadome",               "venue_rating": 38,"tourney": 5, "ff": 0,"titles": 0},
@@ -459,13 +474,16 @@ ALL_D1_PROGRAMS = [
     {"name": "Southern",             "nickname": "Jaguars",     "city": "Baton Rouge",   "state": "LA","conference": "SWAC","home_court": "F. G. Clark Center",                "venue_rating": 36,"tourney": 9, "ff": 0,"titles": 0},
     {"name": "Texas Southern",       "nickname": "Tigers",      "city": "Houston",       "state": "TX","conference": "SWAC","home_court": "Health and Physical Education Arena","venue_rating": 38,"tourney": 11,"ff": 0,"titles": 0},
     # SUMMIT LEAGUE
-    {"name": "Kansas City",       "nickname": "Roos",         "city": "Kansas City", "state": "MO","conference": "Summit","home_court": "Swinney Recreation Center",    "venue_rating": 40,"tourney": 0, "ff": 0,"titles": 0},
-    {"name": "North Dakota",      "nickname": "Fighting Hawks","city": "Grand Forks", "state": "ND","conference": "Summit","home_court": "Betty Engelstad Sioux Center", "venue_rating": 44,"tourney": 1, "ff": 0,"titles": 0},
-    {"name": "North Dakota State","nickname": "Bison",         "city": "Fargo",       "state": "ND","conference": "Summit","home_court": "Bison Sports Arena",           "venue_rating": 46,"tourney": 4, "ff": 0,"titles": 0},
-    {"name": "Omaha",             "nickname": "Mavericks",     "city": "Omaha",       "state": "NE","conference": "Summit","home_court": "Baxter Arena",                 "venue_rating": 52,"tourney": 1, "ff": 0,"titles": 0},
-    {"name": "Oral Roberts",      "nickname": "Golden Eagles", "city": "Tulsa",       "state": "OK","conference": "Summit","home_court": "Mabee Center",                 "venue_rating": 52,"tourney": 7, "ff": 0,"titles": 0},
-    {"name": "South Dakota",      "nickname": "Coyotes",       "city": "Vermillion",  "state": "SD","conference": "Summit","home_court": "Sanford Coyote Sports Center", "venue_rating": 48,"tourney": 0, "ff": 0,"titles": 0},
-    {"name": "South Dakota State","nickname": "Jackrabbits",   "city": "Brookings",   "state": "SD","conference": "Summit","home_court": "Frost Arena",                  "venue_rating": 50,"tourney": 7, "ff": 0,"titles": 0},
+    {"name": "Kansas City",        "nickname": "Roos",          "city": "Kansas City", "state": "MO","conference": "Summit","home_court": "Swinney Recreation Center",    "venue_rating": 40,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "North Dakota",       "nickname": "Fighting Hawks", "city": "Grand Forks", "state": "ND","conference": "Summit","home_court": "Betty Engelstad Sioux Center", "venue_rating": 44,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "North Dakota State",  "nickname": "Bison",         "city": "Fargo",       "state": "ND","conference": "Summit","home_court": "Bison Sports Arena",           "venue_rating": 46,"tourney": 4, "ff": 0,"titles": 0},
+    {"name": "Omaha",              "nickname": "Mavericks",     "city": "Omaha",       "state": "NE","conference": "Summit","home_court": "Baxter Arena",                 "venue_rating": 52,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "Oral Roberts",       "nickname": "Golden Eagles", "city": "Tulsa",       "state": "OK","conference": "Summit","home_court": "Mabee Center",                 "venue_rating": 52,"tourney": 7, "ff": 0,"titles": 0},
+    {"name": "South Dakota",       "nickname": "Coyotes",       "city": "Vermillion",  "state": "SD","conference": "Summit","home_court": "Sanford Coyote Sports Center", "venue_rating": 48,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "South Dakota State", "nickname": "Jackrabbits",   "city": "Brookings",   "state": "SD","conference": "Summit","home_court": "Frost Arena",                  "venue_rating": 50,"tourney": 7, "ff": 0,"titles": 0},
+    {"name": "Western Illinois",   "nickname": "Leathernecks",  "city": "Macomb",      "state": "IL","conference": "Summit","home_court": "Western Hall",                 "venue_rating": 42,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "Denver",             "nickname": "Pioneers",      "city": "Denver",      "state": "CO","conference": "Summit","home_court": "Magness Arena",                "venue_rating": 46,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "St. Thomas",         "nickname": "Tommies",       "city": "St. Paul",    "state": "MN","conference": "Summit","home_court": "Schoenecker Arena",            "venue_rating": 40,"tourney": 0, "ff": 0,"titles": 0},
     # SUN BELT
     {"name": "Appalachian State","nickname": "Mountaineers","city": "Boone",       "state": "NC","conference": "Sun Belt","home_court": "Holmes Convocation Center", "venue_rating": 50,"tourney": 3, "ff": 0,"titles": 0},
     {"name": "Arkansas State",   "nickname": "Red Wolves",  "city": "Jonesboro",   "state": "AR","conference": "Sun Belt","home_court": "First National Bank Arena", "venue_rating": 48,"tourney": 1, "ff": 0,"titles": 0},
@@ -495,11 +513,15 @@ ALL_D1_PROGRAMS = [
     {"name": "Seattle",         "nickname": "Redhawks",    "city": "Seattle",       "state": "WA","conference": "WCC","home_court": "Redhawk Center",                   "venue_rating": 46,"tourney": 11,"ff": 1,"titles": 0},
     {"name": "Washington State","nickname": "Cougars",     "city": "Pullman",       "state": "WA","conference": "WCC","home_court": "Beasley Coliseum",                 "venue_rating": 60,"tourney": 7, "ff": 1,"titles": 0},
     # WAC
-    {"name": "Abilene Christian","nickname": "Wildcats",   "city": "Abilene",      "state": "TX","conference": "WAC","home_court": "Moody Coliseum",            "venue_rating": 40,"tourney": 2, "ff": 0,"titles": 0},
-    {"name": "Southern Utah",   "nickname": "Thunderbirds","city": "Cedar City",   "state": "UT","conference": "WAC","home_court": "America First Event Center", "venue_rating": 42,"tourney": 1, "ff": 0,"titles": 0},
-    {"name": "Tarleton State",  "nickname": "Texans",      "city": "Stephenville", "state": "TX","conference": "WAC","home_court": "EECU Center",                "venue_rating": 38,"tourney": 0, "ff": 0,"titles": 0},
-    {"name": "UT Arlington",    "nickname": "Mavericks",   "city": "Arlington",    "state": "TX","conference": "WAC","home_court": "College Park Center",        "venue_rating": 46,"tourney": 1, "ff": 0,"titles": 0},
-    {"name": "Utah Valley",     "nickname": "Wolverines",  "city": "Orem",         "state": "UT","conference": "WAC","home_court": "UCCU Center",                "venue_rating": 44,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "Abilene Christian", "nickname": "Wildcats",    "city": "Abilene",       "state": "TX","conference": "WAC","home_court": "Moody Coliseum",             "venue_rating": 40,"tourney": 2, "ff": 0,"titles": 0},
+    {"name": "Southern Utah",     "nickname": "Thunderbirds","city": "Cedar City",    "state": "UT","conference": "WAC","home_court": "America First Event Center",  "venue_rating": 42,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "Tarleton State",    "nickname": "Texans",      "city": "Stephenville",  "state": "TX","conference": "WAC","home_court": "EECU Center",                 "venue_rating": 38,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "UT Arlington",      "nickname": "Mavericks",   "city": "Arlington",     "state": "TX","conference": "WAC","home_court": "College Park Center",         "venue_rating": 46,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "Utah Valley",       "nickname": "Wolverines",  "city": "Orem",          "state": "UT","conference": "WAC","home_court": "UCCU Center",                 "venue_rating": 44,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "Dixie State",        "nickname": "Trailblazers","city": "St. George",    "state": "UT","conference": "WAC","home_court": "Burns Arena",                 "venue_rating": 40,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "California Baptist","nickname": "Lancers",     "city": "Riverside",     "state": "CA","conference": "WAC","home_court": "CBU Events Center",           "venue_rating": 42,"tourney": 0, "ff": 0,"titles": 0},
+    {"name": "Seattle U",         "nickname": "Redhawks",    "city": "Seattle",       "state": "WA","conference": "WAC","home_court": "Redhawk Center WAC",          "venue_rating": 44,"tourney": 1, "ff": 0,"titles": 0},
+    {"name": "UMKC",              "nickname": "Kangaroos",   "city": "Kansas City",   "state": "MO","conference": "WAC","home_court": "Swinney Recreation Center WAC","venue_rating": 40,"tourney": 0, "ff": 0,"titles": 0},
 ]
 
 
@@ -582,6 +604,51 @@ def build_all_d1_programs():
         if prestige >= 75:
             seed_legacy_coach(p["coach"], prestige)
             p["coach_seasons"] = p["coach"]["seasons_at_program"]
+
+        # Seed scheduling_aggression -- fixed coach personality trait (1-10).
+        # Drives non-conference scheduling behavior: road game willingness,
+        # quality of opponents sought, neutral site appetite.
+        # Capped by conference tier -- floor_conf programs max out at 3
+        # regardless of coach (program reality overrides personality).
+        conf_tier = get_conference_tier(data["conference"])["tier"]
+        if conf_tier == "power":
+            # Power: full range, weighted toward middle (5-7 most common)
+            aggression = random.choices(
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                weights=[2, 3, 5, 8, 14, 16, 18, 16, 10, 8],
+                k=1
+            )[0]
+        elif conf_tier == "high_major":
+            # High major: slightly less aggressive on average
+            aggression = random.choices(
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                weights=[3, 5, 8, 12, 16, 18, 16, 12, 6, 4],
+                k=1
+            )[0]
+        elif conf_tier == "mid_major":
+            # Mid major: centered around 4-6
+            aggression = random.choices(
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                weights=[4, 7, 12, 16, 18, 16, 12, 8, 4, 3],
+                k=1
+            )[0]
+        elif conf_tier == "low_major":
+            # Low major: lower aggression, take the paycheck games
+            aggression = random.choices(
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                weights=[10, 16, 18, 16, 14, 10, 8, 5, 2, 1],
+                k=1
+            )[0]
+        else:
+            # floor_conf: almost entirely road paycheck games, cap at 3
+            aggression = random.choices(
+                [1, 2, 3],
+                weights=[40, 40, 20],
+                k=1
+            )[0]
+
+        p["coach"]["scheduling_aggression"] = aggression
+        p["scheduling_aggression"] = aggression  # convenience shortcut
 
         programs.append(p)
     return programs
